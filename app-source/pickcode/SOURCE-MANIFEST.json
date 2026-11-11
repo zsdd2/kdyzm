@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "version": "3.1.50",
+  "version": "3.1.51",
   "upstreamRepository": "https://github.com/SongZX0106/PickCode",
   "upstreamCommit": "07f9fed59122d7f2210a825aadedc2a913a83176",
   "note": "Production source snapshot with authorized downstream modifications; no private data or workflow history.",
@@ -82,7 +82,7 @@
     {
       "path": "android/app/build.gradle",
       "size": 3562,
-      "sha256": "93daff20313418839faaaca547b5af3cdf617bd9f0beff649e2137f929ef03fd"
+      "sha256": "dcfa7fd4e609b114941e2de1a38dded7cd16a10409e1d20b4d26817493b3be5e"
     },
     {
       "path": "android/app/src/main/AndroidManifest.xml",
@@ -572,17 +572,17 @@
     {
       "path": "manifest.json",
       "size": 3242,
-      "sha256": "35b05558af478be5bf30b1dde2efeb24518f6f6eb976f5fb18b03660810fb1d1"
+      "sha256": "b9e497a6bcf0b3e168154cc74974f18b68bcc6cd75790d23ff2f3623b8334f92"
     },
     {
       "path": "package-lock.json",
       "size": 256609,
-      "sha256": "bb68e2c4065a60c6c2f12b64ed00dac30d0e24f300a87afaefb7f960e491df03"
+      "sha256": "bede4cc1ea6b86ef1c4c9887f50db9357d57a03a1d2eaadeff24bd1c16ac0753"
     },
     {
       "path": "package.json",
       "size": 1728,
-      "sha256": "9106a0bf42cb4c43df7a33c6463952303cd21f4a1f3bdd39f29688f32fddeb22"
+      "sha256": "52bb9fa4accadf8cd4c334c27522944ddd14ab99534bba7aeed4de07272e20bb"
     },
     {
       "path": "pages.json",
@@ -611,8 +611,8 @@
     },
     {
       "path": "pages/my/changelog.vue",
-      "size": 47897,
-      "sha256": "f25f29f482632182365c4b39557a548078a85bfe40bfcd2270ef4e85572d3863"
+      "size": 48807,
+      "sha256": "bb3a15671ac344430ba8d3efea07be84c5bb78cb4aee717cfa6d38ef58808aa5"
     },
     {
       "path": "pages/my/faq.vue",
@@ -741,8 +741,8 @@
     },
     {
       "path": "services/logistics-contacts.js",
-      "size": 3548,
-      "sha256": "a7c5d799c8eb18f0651954bd612ba859c224d52fd6012c6bacfb6d9aefe2971a"
+      "size": 5017,
+      "sha256": "d56d5218c290a3054ab7a7250dc73f665b40f580a4658c4fa0db6df224076012"
     },
     {
       "path": "services/notification-dismissals.js",
@@ -2619,7 +2619,7 @@
     {
       "path": "README.md",
       "size": 2055,
-      "sha256": "e807cad3654d6e5ba443a5724b070dc3be478de39b59bc51dcec7acd5dbb932c"
+      "sha256": "6858c7de0b962adb8f7057e0f88f89ce466ccbc310ab05a8d130542b7bd0148c"
     },
     {
       "path": ".gitignore",

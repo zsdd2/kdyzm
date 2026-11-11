@@ -2,6 +2,14 @@
   <view class="changelog-container sf-page">
     <view class="version-list" :class="{ expanded: showOlder }">
       <view class="version-item sf-surface">
+        <view class="version-header"><text class="version-name">v3.1.51 · 私人版</text><text class="version-date">2026-11-11</text></view>
+        <view class="update-list">
+          <view class="update-item"><text class="tag fix">电话</text><text class="content">修复圆通姓名后接手机号、顺丰交给联系人等派送文案的号码遗漏</text></view>
+          <view class="update-item"><text class="tag optimize">识别</text><text class="content">区分快递员、网点和揽收号码，签收提示不再清空有效派送电话，改派与号码冲突保留未知</text></view>
+          <view class="update-item"><text class="tag optimize">兼容</text><text class="content">分别覆盖淘宝、拼多多、京东历史物流句式，已有本地轨迹无需重新采集即可识别</text></view>
+        </view>
+      </view>
+      <view class="version-item sf-surface">
         <view class="version-header"><text class="version-name">v3.1.50 · 私人版</text><text class="version-date">2026-11-11</text></view>
         <view class="update-list">
           <view class="update-item"><text class="tag fix">详情</text><text class="content">送达待确认卡片可打开对应包裹详情，商品名保持一行并支持展开全文</text></view>

@@ -46,3 +46,56 @@ test('换派人员、掩码或无日期冲突不会沿用旧派送电话', () =>
     assert.deepEqual(courierPhones({logisticsEvents:[old,update]}),[]);
   }
 });
+
+test('拼多多姓名括号号码后接派件动作，号段说明和网点电话不归入派送员', () => {
+  const description = '【测试网点】的测试员（13800000001）正在为您派件（95161和18521号段的上海号码为圆通快递员专属号码，请放心接听。如遇物流问题，请联系快递员为您解决，或联系网点电话:13900000002，或致电专属客服95554）';
+  assert.deepEqual(courierPhones({ platform: 'pdd', logisticsEvents: [{ time: 100, description }] }).map(p => p.phone), ['13800000001']);
+});
+
+test('签收及客服的泛称提示不清空同运单已知派送电话', () => {
+  const old = { time: 100, description: '派送员13800000001正在派件' };
+  for (const description of ['您的快件已签收，如有问题请联系快递员', '如有问题，请联系快递员或网点电话13900000002', '您的快件已签收，感谢快递员的辛勤工作']) {
+    assert.deepEqual(courierPhones({ platform: 'pdd', logisticsEvents: [old, { time: 200, description }] }).map(p => p.phone), ['13800000001'], description);
+  }
+  assert.deepEqual(courierPhones({ logisticsEvents: [old, { time: 200, description: '您的快件已签收，如需退货请联系商家' }] }).map(p => p.phone), ['13800000001']);
+});
+
+test('前置号码的配送语义不借用收件、揽收、客服和网点号码', () => {
+  for (const description of ['收件人（13800000001）正在为您派件', '网点电话13800000001正在派送', '客服13800000001正在为您派件', '快递员13800000001已揽收', '测试员（13800000001）预计为您派件', '测试员（13800000001）未能为您派件', '退回件由快递员13800000001派送给商家']) {
+    assert.deepEqual(courierPhones({ platform: 'pdd', logisticsEvents: [{ time: 100, description }] }), [], description);
+  }
+});
+
+test('同时间不同派送员号码不依赖轨迹输入顺序，改派无完整号码不回退旧号', () => {
+  const events = [{ time: 100, description: '派送员13800000001正在派件' }, { time: 100, description: '派送员13900000002正在派件' }];
+  assert.deepEqual(courierPhones({ logisticsEvents: events }), []);
+  assert.deepEqual(courierPhones({ logisticsEvents: events.slice().reverse() }), []);
+  for (const description of ['【测试网点】的测试员（139****0002）正在为您派件', '已改派给测试员，请稍后查询']) {
+    assert.deepEqual(courierPhones({ platform: 'pdd', logisticsEvents: [events[0], { time: 200, description }] }), []);
+  }
+  assert.deepEqual(courierPhones({ logisticsEvents: [{ time: 200, description: '原快递员13800000001已改派给配送员139****0002' }] }), []);
+});
+
+test('淘宝顺丰交给姓名联系电话的配送句式按时间选择，摘要重复不制造冲突', () => {
+  const old = { time: 100, description: '派送中：快件交给【测试甲，联系电话：13800000001】，正在派送中（可联系小哥处理）' };
+  const latest = { time: 200, description: '快件交给【测试乙，联系电话：13900000002】，正在派送中' };
+  assert.deepEqual(courierPhones({ platform: 'taobao', logisticsEvents: [old] }).map(p => p.phone), ['13800000001']);
+  assert.deepEqual(courierPhones({ platform: 'taobao', logisticsEvents: [old, latest, { ...latest, time: 0, description: '派送中：' + latest.description }] }).map(p => p.phone), ['13900000002']);
+  assert.deepEqual(courierPhones({ platform: 'taobao', logisticsEvents: [{ time: 100, description: '快件到达【测试网点，电话：13800000001】，正在派送中' }] }), []);
+});
+
+test('京东配送和家门口签收采用明确配送员，营业部电话不替换当前号码', () => {
+  const delivery = { time: 100, description: '派送中：您的订单正在派送途中，请您准备签收（快递员：测试员，电话：13800000001）' };
+  const signed = { time: 200, description: '已签收：您的订单已送达【家门口，有问题联系小哥】。如有疑问您可联系配送员【测试员，13800000001】处理。感谢您在京东购物。' };
+  const depot = { time: 300, description: '运输中：您的订单已到达【测试营业部】，营业部电话：13900000002' };
+  assert.deepEqual(courierPhones({ platform: 'jd', logisticsEvents: [delivery, signed, depot] }).map(p => p.phone), ['13800000001']);
+  assert.deepEqual(courierPhones({ platform: 'jd', logisticsEvents: [depot] }), []);
+  assert.deepEqual(courierPhones({ platform: 'jd', logisticsEvents: [{ time: 100, description: '快递员建议联系营业部电话13900000002' }] }), []);
+});
+
+test('拼多多到站文案分别识别代收点和快递员，不用号段或收件人脱敏号码更新派送员', () => {
+  const delivery = { time: 100, description: '【代收点】您的快件已投递，如有疑问请联系代收点：13900000002，快递员：测试员(13800000001)，网点电话：13700000003，投诉电话：13600000004' };
+  const reminder = { time: 200, description: '已签收，如有问题请联系快递员，收件人电话139****0002' };
+  assert.deepEqual(courierPhones({ platform: 'pdd', logisticsEvents: [delivery, reminder] }).map(p => p.phone), ['13800000001']);
+  assert.deepEqual(courierPhones({ platform: 'pdd', logisticsEvents: [{ time: 100, description: '95161和18521号段为圆通快递员专属号码，请放心接听' }] }), []);
+});
