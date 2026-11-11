@@ -51,12 +51,12 @@
           <text class="card-extra"><text class="pending-count">{{ receiptDeliveries.length }}</text> 件待确认</text>
         </view>
         <view role="list">
-          <view v-for="(entry, index) in receiptDeliveries" :key="entry.shipment.id" class="code-item receipt-card sf-surface" role="listitem">
+          <view v-for="(entry, index) in receiptDeliveries" :key="entry.shipment.id" class="code-item receipt-card sf-surface" role="listitem" @click="openReceiptDetails(entry)">
             <view class="pickup-card-head">
               <text class="family-badge" :class="{ unassigned: !entry.order.familyId }" :style="pickupFamilyStyle(entry.order.familyId)">{{ entry.order.familyName || '待归属' }}</text>
               <text class="pickup-platform">{{ platformName(entry.order.platform) }}<template v-if="entry.shipment.carrier"> · {{ entry.shipment.carrier }}</template></text>
             </view>
-            <view class="receipt-copy"><text class="receipt-title">{{ entry.order.title || '包裹' }}</text><text class="receipt-status">已送达·待确认</text></view>
+            <button class="receipt-copy" role="button" tabindex="0" data-notification-control :data-receipt-details="entry.shipment.id" aria-haspopup="dialog" :aria-label="'查看 ' + (entry.order.title || '包裹') + ' 包裹' + (index + 1) + '详情'" @click.stop="openReceiptDetails(entry)"><text class="receipt-title">{{ entry.order.title || '包裹' }}</text><text class="receipt-status">已送达·待确认</text></button>
             <button class="picked-btn receipt-confirm" role="button" :tabindex="canConfirmReceipt(entry) ? 0 : -1" data-notification-control :data-receipt-confirm="entry.shipment.id" :aria-label="'确认收到 ' + (entry.order.title || '包裹') + ' 包裹' + (index + 1)" :disabled="!canConfirmReceipt(entry)" :aria-busy="confirmingReceiptId === entry.shipment.id" @click.stop="confirmReceipt(entry)">确认收到</button>
             <view class="pickup-journeys"><ParcelJourney :journey="entry.journey" /></view>
           </view>
@@ -223,13 +223,16 @@
       <view v-if="notificationsOpen" ref="notificationSheet" class="notification-sheet sf-surface" role="dialog" aria-modal="true" aria-labelledby="notification-title" @click.stop>
         <view class="notification-handle" aria-hidden="true"></view>
         <view class="notification-heading">
-          <view class="notification-title-row"><text id="notification-title" class="notification-title" role="heading" aria-level="2">通知中心</text><text class="notification-total">{{ notificationCount ? notificationCount + ' 项待处理' : '暂无待处理事项' }}</text></view>
-          <button ref="notificationClose" class="notification-close" role="button" tabindex="0" data-notification-control aria-label="关闭通知中心" @click="closeNotifications()"><uni-icons type="closeempty" size="18" color="#8493a8" /></button>
+          <view class="notification-title-row"><text id="notification-title" class="notification-title" role="heading" aria-level="2">{{ receiptDetail ? '订单详情' : '通知中心' }}</text><text v-if="!receiptDetail" class="notification-total">{{ notificationCount ? notificationCount + ' 项待处理' : '暂无待处理事项' }}</text></view>
+          <button ref="notificationClose" class="notification-close" role="button" tabindex="0" data-notification-control :aria-label="receiptDetail ? '关闭订单详情' : '关闭通知中心'" @click="closeNotifications()"><uni-icons type="closeempty" size="18" color="#8493a8" /></button>
         </view>
-        <view class="notification-tabs sf-surface" role="group" aria-label="通知类别">
+        <view v-if="!receiptDetail" class="notification-tabs sf-surface" role="group" aria-label="通知类别">
           <button v-for="tab in notificationTabs" :key="tab.key" role="button" tabindex="0" data-notification-control :class="{ selected: notificationCategory === tab.key }" :aria-pressed="notificationCategory === tab.key" @click="notificationCategory = tab.key">{{ tab.label }}<text v-if="tab.count">{{ tab.count }}</text></button>
         </view>
-        <view class="notification-list" role="list">
+        <view v-if="receiptDetail" class="notification-list receipt-detail-content">
+          <OrderOverview :key="receiptDetail.shipment.id" :order="receiptDetail.order" :shipment="receiptDetail.shipment" status="已送达·待确认" />
+        </view>
+        <view v-else class="notification-list" role="list">
           <view v-if="!visibleNotifications.length" class="notification-empty">{{ notificationCategory === 'error' ? '目前没有异常' : '目前没有待确认事项' }}</view>
           <view v-for="notice in visibleNotifications" :key="notice.id" class="notification-item sf-surface" :class="'notification-' + notice.kind" role="listitem" :data-notification-id="notice.id">
             <view class="notification-icon" aria-hidden="true"><image v-if="notice.kind === 'review'" :src="reviewNoticeIcon" mode="aspectFit" /><uni-icons v-else :type="notice.kind === 'error' ? 'info' : 'refreshempty'" size="20" :color="notice.kind === 'error' ? '#eb6167' : '#1673f7'" /></view>
@@ -249,7 +252,8 @@
             <button class="notification-dismiss" role="button" tabindex="0" data-notification-control :aria-label="'关闭通知：' + notice.title + '，' + notice.body" @click="dismissNotification(notice)"><uni-icons type="closeempty" size="16" color="#8493a8" /></button>
           </view>
         </view>
-        <view class="notification-footer"><text>事项有新进展时会再次提醒</text><button role="button" tabindex="0" data-notification-control @click="closeNotifications()">收起</button></view>
+        <view v-if="receiptDetail" class="notification-footer receipt-detail-footer"><button role="button" tabindex="0" data-notification-control @click="closeNotifications()">关闭</button><button class="receipt-detail-confirm" role="button" :tabindex="canConfirmReceipt(receiptDetail) ? 0 : -1" data-notification-control :disabled="!canConfirmReceipt(receiptDetail)" :aria-busy="confirmingReceiptId === receiptDetail.shipment.id" @click.stop="confirmReceipt(receiptDetail)">确认收到</button></view>
+        <view v-else class="notification-footer"><text>事项有新进展时会再次提醒</text><button role="button" tabindex="0" data-notification-control @click="closeNotifications()">收起</button></view>
       </view>
     </uni-popup>
     <uni-popup ref="ignorePopup" type="center" :is-mask-click="false">
@@ -269,6 +273,7 @@
 import yizhanIcon from '@/static/yizhan.png';
 import PickupDetail from '@/components/PickupDetail.vue';
 import PickupShare from '@/components/PickupShare.vue';
+import OrderOverview from '@/components/OrderOverview.vue';
 import ParcelJourney from '@/components/ParcelJourney.vue';
 import { parcelJourney, JOURNEY_COMPLETION_MS } from '@/services/parcel-journey.js';
 import StationChooser from '@/components/StationChooser.vue';
@@ -285,11 +290,11 @@ const shareIcon = 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http:/
 // The approved preview's source SVG avoids the cropped Figma export viewport.
 const reviewNoticeIcon = 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#cf8b22" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m12 2 10 10-10 10L2 12Z"/><path d="M12 7v6m0 3h.01"/></svg>');
 export default {
-  components: { ParcelJourney, PickupDetail, StationChooser, PickupShare },
+  components: { ParcelJourney, PickupDetail, StationChooser, PickupShare, OrderOverview },
   data() {
     return { sourceOpen: false, expandedTitles: {}, newCode: '', addingCode: false, packageCodes: [], snapshot: emptySnapshot(), dateShowActions: {}, expandedDates: {}, expandedStations: {}, pickupGrouping: 'station', sourceItem: null, detailRevision: 0, matchingOnOpen: false, journeyCompletions: {}, yizhanIcon,
       hydrated: false, backgroundSyncing: false, scanning: false, syncing: false, confirmingReceiptId: '', refreshProgressText: '更新中', syncMessage: '', syncErrors: { sms: '', online: '' }, pendingPickupId: '', ignoring: null, ignoreReason: '', savingIgnore: false, loadError: '',
-      notificationsOpen: false, stationChooserOpen: false, shareOpen: false, shareIcon, notificationCategory: 'all', expandedReminderId: '', reviewNoticeIcon, notificationDismissals: readNotificationDismissals(),
+      notificationsOpen: false, receiptDetailTarget: null, stationChooserOpen: false, shareOpen: false, shareIcon, notificationCategory: 'all', expandedReminderId: '', reviewNoticeIcon, notificationDismissals: readNotificationDismissals(),
       reducedMotion: typeof window !== 'undefined' && !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches };
   },
   computed: {
@@ -345,6 +350,7 @@ export default {
       return pickupSections(placement, this.pickupGrouping).map(section => ({ ...section, addresses: Object.fromEntries(Object.entries(section.addresses).map(([address, items]) => [address, items.map(item => live.get(item.id))])) }));
     },
     expandedGroups() { return Object.assign(Object.create(null), this.pickupGrouping === 'station' ? this.expandedStations : this.expandedDates); },
+    receiptDetail() { return this.receiptDetailTarget ? this.receiptDeliveries.find(entry => entry.order.id === this.receiptDetailTarget.orderId && entry.shipment.id === this.receiptDetailTarget.shipmentId) || null : null; },
     receiptDeliveries() {
       return (this.snapshot.packages || []).filter(order => order.source === 'online' && !order.hidden && !shouldArchivePackage(order)).flatMap(order => (order.shipments || []).filter(shipment => shipment.needsReceiptConfirmation && !shipment.picked && !shipment.hidden).map(shipment => ({ order, shipment, journey: parcelJourney(shipment, order) })));
     }
@@ -431,7 +437,7 @@ export default {
     },
     openNotifications() {
       if (this.notificationsOpen || this._notificationClosing) return;
-      this.handlePageClick(); this.notificationCategory = 'all'; this.notificationsOpen = true;
+      this.handlePageClick(); this.receiptDetailTarget = null; this.notificationCategory = 'all'; this.notificationsOpen = true;
       if (typeof document !== 'undefined') {
         document.activeElement?.blur?.();
         const tabbar = document.querySelector?.('uni-tabbar');
@@ -455,7 +461,7 @@ export default {
     },
     async closeNotifications(restoreFocus = true) {
       if (!this.notificationsOpen) return;
-      this.notificationsOpen = false; this._notificationClosing = true;
+      this.notificationsOpen = false; this.receiptDetailTarget = null; this._notificationClosing = true;
       this.$refs.notificationsPopup?.close?.();
       this.releaseNotificationBackground();
       // Only consume the same-URL history entry that this sheet created.
@@ -463,7 +469,9 @@ export default {
       this._notificationHistory = null;
       if (typeof window !== 'undefined') await new Promise(resolve => setTimeout(resolve, 310));
       this._notificationClosing = false;
-      if (restoreFocus) this.notificationElement(this.$refs.notificationBell)?.focus?.();
+      const trigger = [...(this.$el?.querySelectorAll?.('[data-receipt-details]') || [])].find(element => element.getAttribute('data-receipt-details') === this._receiptDetailTriggerId);
+      this._receiptDetailTriggerId = '';
+      if (restoreFocus) (trigger || this.notificationElement(this.$refs.notificationBell))?.focus?.();
     },
     releaseNotificationBackground() {
       if (this._notificationTabbar) { this._notificationTabbar.element.inert = this._notificationTabbar.inert; this._notificationTabbar = null; }
@@ -478,17 +486,19 @@ export default {
     notificationPopupChange(event) { if (!event.show && this.notificationsOpen) this.closeNotifications(); },
     notificationKeyboard(event) {
       if (this.notificationsOpen && event.key === 'Tab' && event.type === 'keydown') {
-        const sheet = this.notificationElement(this.$refs.notificationSheet), controls = [...(sheet?.querySelectorAll?.('[data-notification-control]:not([disabled])') || [])];
+        const sheet = this.notificationElement(this.$refs.notificationSheet), selector = this.receiptDetailTarget ? 'button,[role="button"],a[href],input' : '[data-notification-control]:not([disabled])';
+        const controls = [...(sheet?.querySelectorAll?.(selector) || [])].filter(control => !control.hasAttribute?.('disabled') && control.getAttribute?.('tabindex') !== '-1' && (!control.getClientRects || control.getClientRects().length));
         const first = controls[0], last = controls[controls.length - 1];
         if (first && (event.shiftKey && event.target === first || !event.shiftKey && event.target === last || !sheet.contains(event.target))) { event.preventDefault(); (event.shiftKey ? last : first).focus(); }
         return;
       }
       if (this.notificationsOpen && ['Escape', 'Esc'].includes(event.key)) { event.preventDefault(); event.stopPropagation(); if (event.type === 'keyup') this.closeNotifications(); return; }
       if (!['Enter', ' '].includes(event.key)) return;
-      const control = event.target?.closest?.('[data-notification-control]');
+      const control = event.target?.closest?.('[data-notification-control]') || (this.receiptDetailTarget && event.target?.closest?.('uni-button'));
       if (!control || ['BUTTON', 'INPUT'].includes(control.tagName)) return;
       event.preventDefault(); event.stopPropagation();
-      if (event.type === 'keyup' && !control.hasAttribute('disabled')) control.click();
+      const receiptControl = this.receiptDetailTarget || control.hasAttribute('data-receipt-details');
+      if (!event.repeat && event.type === (receiptControl && event.key === 'Enter' ? 'keydown' : 'keyup') && !control.hasAttribute('disabled')) control.click();
     },
     async handleNotificationAction(notice, action = notice.action) {
       if (notice.disabled) return;
@@ -531,6 +541,7 @@ export default {
       if (snapshot.online?.lastSuccessAt > (this.snapshot.online?.lastSuccessAt || 0) && !snapshot.online?.error) this.syncErrors.online = '';
       if (snapshot.lastScanAt > (this.snapshot.lastScanAt || 0)) this.syncErrors.sms = '';
       this.snapshot = snapshot;
+      if (this.receiptDetailTarget && !this.receiptDetail) this.closeNotifications();
       this.hydrated = true;
       this.packageCodes = snapshot.codes.map(item => ({ ...item, showActions: false }));
       if(this.sourceItem){this.sourceItem=snapshot.codes.find(item=>item.id===this.sourceItem.id)||null;if(!this.sourceItem)this.$refs.sourcePopup?.close();}
@@ -550,6 +561,12 @@ export default {
       return !this.expandedTitles[item.id] && characters.length > 15 ? characters.slice(0, 15).join('') + '…' : title;
     },
     receiptLogistics(shipment) { const latest = shipment.logisticsEvents?.[0]; return latest?.message || latest?.description || (shipment.waybillNo ? '运单 ' + shipment.waybillNo : ''); },
+    openReceiptDetails(entry) {
+      if (this.notificationsOpen || this._notificationClosing || !this.receiptDeliveries.some(item => item.order.id === entry.order.id && item.shipment.id === entry.shipment.id)) return;
+      this.openNotifications();
+      this.receiptDetailTarget = { orderId: entry.order.id, shipmentId: entry.shipment.id };
+      this._receiptDetailTriggerId = entry.shipment.id;
+    },
     canConfirmReceipt(entry) { return !this.syncing && !this.scanning && !this.confirmingReceiptId && !!entry.shipment.id && entry.shipment.canPick !== false; },
     async confirmReceipt(entry) {
       const current = this.receiptDeliveries.find(item => item.order.id === entry.order.id && item.shipment.id === entry.shipment.id);
@@ -718,8 +735,9 @@ button[disabled] { opacity:.55; }
 .receipt-heading { margin:0; }
 .receipt-card { grid-template-columns:minmax(0,1fr) auto; }
 .receipt-card .pickup-card-head { padding-right:0; }
-.receipt-copy { grid-column:1; grid-row:2; min-width:0; align-self:center; }
-.receipt-title { display:block; color:var(--sf-text); font-size:.9375rem; line-height:1.5; overflow-wrap:anywhere; }
+.receipt-card { cursor:pointer; }
+.receipt-copy { grid-column:1; grid-row:2; min-width:0; width:100%; align-self:center; margin:0; padding:0; background:transparent; text-align:left; border-radius:0; }
+.receipt-title { display:block; min-width:0; color:var(--sf-text); font-size:.9375rem; line-height:1.5; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .receipt-status { display:block; margin-top:5px; color:var(--sf-muted); font-size:.75rem; line-height:1.5; }
 .receipt-card .receipt-confirm { grid-column:2; grid-row:2; align-self:center; width:auto; min-width:88px; padding-inline:10px; font-size:.875rem; }
 .receipt-confirm[disabled] { opacity:.55; }
@@ -796,6 +814,9 @@ button[disabled] { opacity:.55; }
 .notification-footer { flex:none; display:flex; align-items:center; justify-content:space-between; gap:12px; padding-top:10px; }
 .notification-footer>text { color:var(--sf-muted); font-size:.75rem; line-height:1.5; }
 .notification-footer button { flex:none; min-height:44px; padding:10px 15px; border-radius:12px; background:#ffffff66; color:var(--sf-blue); font-size:.8125rem; line-height:1.5; }
+.receipt-detail-content { padding-bottom:12px; }
+.receipt-detail-footer button { flex:1; }
+.receipt-detail-footer .receipt-detail-confirm { background:var(--sf-blue); color:#fff; }
 .notification-empty { padding:36px 12px; color:var(--sf-muted); font-size:.9375rem; text-align:center; }
 .ignore-dialog { width:calc(100vw - 32px); max-width:420px; padding:22px; box-sizing:border-box; border-radius:26px; color:var(--sf-text); }
 .dialog-title { display:block; font-size:1.25rem; font-weight:700; line-height:1.4; }

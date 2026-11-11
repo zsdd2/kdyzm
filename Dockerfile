@@ -2,7 +2,7 @@ FROM node:24.13.0-bookworm-slim
 LABEL org.opencontainers.image.source="https://github.com/zsdd2/kdyzm" \
       org.opencontainers.image.title="kdyzm" \
       org.opencontainers.image.description="Personal parcel and pickup-code sync service" \
-      org.opencontainers.image.version="3.1.49"
+      org.opencontainers.image.version="3.1.50"
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force

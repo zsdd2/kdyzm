@@ -602,6 +602,14 @@ export function requestSmsPermission() { return request('requestSmsPermission');
 export function openSystemSettings(page = 'app') { return request('openSystemSettings', { page }); }
 export function pinWidget(size) { return request('pinWidget', { size }); }
 export function openShoppingApp(platform) { return request('openShoppingApp', { platform }); }
+export function dialPhone(phone) {
+  if (typeof phone !== 'string' || phone !== phone.trim() || !/^\+?[0-9]{5,15}$/.test(phone)) return Promise.reject(new Error('电话号码格式无效'));
+  if (nativeBridge()) return request('dialPhone', { phone });
+  if (typeof uni === 'undefined' || typeof uni.makePhoneCall !== 'function') return Promise.reject(new Error('当前环境无法打开拨号界面'));
+  return new Promise((resolve, reject) => {
+    uni.makePhoneCall({ phoneNumber: phone, success: () => resolve({ opened: true }), fail: () => reject(new Error('无法打开拨号界面，请手动拨打')) });
+  });
+}
 export function exportPickupImage(mode, dataUrl) {
   if (!nativeBridge() || !['save', 'share'].includes(mode)) return Promise.reject(new Error('当前环境不支持此图片操作'));
   return request(mode === 'save' ? 'savePickupImage' : 'sharePickupImage', { dataUrl });

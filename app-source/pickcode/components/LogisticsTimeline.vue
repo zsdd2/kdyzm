@@ -1,8 +1,8 @@
 <template>
   <view class="logistics" @click.stop>
     <view v-if="latest && !expanded && !expandedOnly" class="latest">
-      <text class="description">最新物流：{{ latest.description || latest.location }}</text>
-      <text class="muted">{{ eventTime(latest) }}{{ latest.location && latest.description ? ' · '+latest.location : '' }}</text>
+      <PhoneText class="description" :text="'最新物流：' + (latest.description || latest.location)" />
+      <PhoneText class="muted" :text="eventTime(latest) + (latest.location && latest.description ? ' · '+latest.location : '')" />
     </view>
     <text v-if="notice" class="notice" :class="{ warning: shipment.logisticsState === 'error' || shipment.logisticsError }">{{ notice }}</text>
     <text v-if="updatedTime" class="muted">轨迹更新 {{ updatedTime }}</text>
@@ -11,8 +11,8 @@
     <view v-if="expanded || expandedOnly" class="events">
       <view v-for="(event, index) in events" :key="index" class="event" :class="{ current: index === 0 }">
         <text class="muted">{{ eventTime(event) }}</text>
-        <text class="description">{{ event.description || event.location }}</text>
-        <text v-if="event.location && event.description" class="muted">{{ event.location }}</text>
+        <PhoneText class="description" :text="event.description || event.location" />
+        <PhoneText v-if="event.location && event.description" class="muted" :text="event.location" />
       </view>
       <text v-if="shipment.logisticsTruncated" class="muted">仅保留最近 {{ events.length }} 条轨迹</text>
       <text class="muted cache-note">以上为已同步记录，更新后会自动显示。</text>
@@ -20,7 +20,9 @@
   </view>
 </template>
 <script>
+import PhoneText from '@/components/PhoneText.vue';
 export default {
+  components: { PhoneText },
   props:{shipment:{type:Object,default:()=>({})},expandedOnly:Boolean},
   data:()=>({expanded:false}),
   watch:{'shipment.id'(){this.expanded=false;}},

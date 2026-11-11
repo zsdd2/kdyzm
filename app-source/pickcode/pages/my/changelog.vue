@@ -2,6 +2,14 @@
   <view class="changelog-container sf-page">
     <view class="version-list" :class="{ expanded: showOlder }">
       <view class="version-item sf-surface">
+        <view class="version-header"><text class="version-name">v3.1.50 · 私人版</text><text class="version-date">2026-11-11</text></view>
+        <view class="update-list">
+          <view class="update-item"><text class="tag fix">详情</text><text class="content">送达待确认卡片可打开对应包裹详情，商品名保持一行并支持展开全文</text></view>
+          <view class="update-item"><text class="tag optimize">信息</text><text class="content">订单基本信息增加当前运单号和派送员电话，缺少号码时明确提示</text></view>
+          <view class="update-item"><text class="tag optimize">电话</text><text class="content">物流中的完整手机号可点击打开拨号界面，不自动呼叫</text></view>
+        </view>
+      </view>
+      <view class="version-item sf-surface">
         <view class="version-header"><text class="version-name">v3.1.49 · 私人版</text><text class="version-date">2026-11-11</text></view>
         <view class="update-list">
           <view class="update-item"><text class="tag fix">待取</text><text class="content">送到门口的包裹直接显示在待取件列表，支持逐件确认收到</text></view>

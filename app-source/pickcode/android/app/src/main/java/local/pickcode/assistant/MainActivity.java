@@ -208,6 +208,7 @@ public final class MainActivity extends Activity {
                 if ("openSystemSettings".equals(action)) { runOnUiThread(() -> openSettings(requestId, data)); return; }
                 if ("pinWidget".equals(action)) { runOnUiThread(() -> pinWidget(requestId, data)); return; }
                 if ("openShoppingApp".equals(action)) { runOnUiThread(() -> openShoppingApp(requestId, data)); return; }
+                if ("dialPhone".equals(action)) { runOnUiThread(() -> dialPhone(requestId, data)); return; }
                 if ("savePickupImage".equals(action) || "sharePickupImage".equals(action)) {
                     runOnUiThread(() -> exportPickupImage(requestId, data, "savePickupImage".equals(action))); return;
                 }
@@ -504,6 +505,18 @@ public final class MainActivity extends Activity {
             startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
             reply(id, new JSONObject().put("opened", true), null);
         } catch (Exception unavailable) { reply(id, null, "未找到此购物应用，请先安装后重试"); }
+    }
+
+    private void dialPhone(String id, JSONObject payload) {
+        if (!trustedPage || isDestroyed()) return;
+        Object phone = payload.opt("phone");
+        if (payload.length() != 1 || !(phone instanceof String) || !((String) phone).matches("\\A\\+?[0-9]{5,15}\\z")) {
+            reply(id, null, "电话号码格式无效"); return;
+        }
+        try {
+            startActivity(new Intent(Intent.ACTION_DIAL, Uri.fromParts("tel", (String) phone, null)));
+            reply(id, new JSONObject().put("opened", true), null);
+        } catch (Exception unavailable) { reply(id, null, "无法打开拨号应用，请手动拨打"); }
     }
 
     private void reply(String id, JSONObject value, String error) {

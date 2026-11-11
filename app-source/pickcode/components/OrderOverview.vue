@@ -22,13 +22,13 @@
     <view class="fold-card">
       <button class="fold-heading" role="button" tabindex="0" :aria-expanded="logisticsOpen" @click="logisticsOpen = !logisticsOpen"><svg class="section-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M2 5h12v13H2zM14 10h5l3 4v4h-8" /><circle cx="6" cy="18" r="2" fill="#f7faff" /><circle cx="18" cy="18" r="2" fill="#f7faff" /></svg><text>物流详情</text><view class="fold-action">{{ (shipment.logisticsEvents || []).length }}条轨迹 <uni-icons :type="logisticsOpen ? 'top' : 'bottom'" size="15" color="#1874d4" /></view></button>
       <view class="latest-row"><text class="carrier-state">{{ shipment.carrier || '快递' }} · {{ logisticsStatus }}</text><text class="latest-time">{{ time(latest?.time) }}</text></view>
-      <text class="latest-copy">{{ latest?.description || latest?.message || latest?.location || (shipment.waybillNo ? '物流轨迹待同步' : '暂无运单信息') }}</text>
+      <PhoneText class="latest-copy" :text="latest?.description || latest?.message || latest?.location || (shipment.waybillNo ? '物流轨迹待同步' : '暂无运单信息')" />
       <LogisticsTimeline v-if="logisticsOpen" :shipment="shipment" expanded-only />
     </view>
     <view class="fold-card basic-card">
       <button class="fold-heading" role="button" tabindex="0" :aria-expanded="basicOpen" @click="basicOpen = !basicOpen"><uni-icons type="list" size="22" color="#587189" /><text>订单基本信息</text><uni-icons class="fold-chevron" :type="basicOpen ? 'top' : 'bottom'" size="17" color="#587189" /></button>
       <view v-if="basicOpen" class="basic-content">
-        <view v-for="field in basicFields" :key="field.label" class="basic-row"><text class="basic-label">{{ field.label }}</text><text class="basic-value" selectable>{{ field.value }}</text></view>
+        <view v-for="field in basicFields" :key="field.label" class="basic-row"><text class="basic-label">{{ field.label }}</text><PhoneText v-if="field.phone" class="basic-value" :text="field.value" /><text v-else class="basic-value" selectable>{{ field.value }}</text></view>
       </view>
     </view>
   </view>
@@ -36,10 +36,12 @@
 <script>
 import ParcelJourney from '@/components/ParcelJourney.vue';
 import LogisticsTimeline from '@/components/LogisticsTimeline.vue';
+import PhoneText from '@/components/PhoneText.vue';
+import { courierPhones } from '@/services/logistics-contacts.js';
 import { parcelJourney } from '@/services/parcel-journey.js';
 import { pickupCabinet, stationDisplayName } from '@/services/station-presentation.js';
 export default {
-  components: { ParcelJourney, LogisticsTimeline },
+  components: { ParcelJourney, LogisticsTimeline, PhoneText },
   props: { order: { type: Object, default: () => ({}) }, shipment: { type: Object, default: () => ({}) }, pickup: Object, status: { type: String, default: '待取件' }, sources: { type: Array, default: () => [] } },
   data: () => ({ fullTitle: false, smsOpen: false, logisticsOpen: false, basicOpen: false }),
   watch: { 'order.id'() { this.reset(); }, 'shipment.id'() { this.logisticsOpen = false; this.smsOpen = false; } },
@@ -54,9 +56,11 @@ export default {
     basicFields() {
       const value = input => String(input ?? '').trim() || '未知';
       return [{ label: '订单号', value: value(this.order.platformOrderId) },
+        { label: '运单号', value: value(this.shipment.waybillNo || (!this.shipment.id ? this.order.waybillNo : '')) },
         { label: '平台名称', value: value(this.order.platform ? this.platform : '') },
         { label: '订单状态', value: value(this.order.orderStatus || this.order.tradeStatus) },
-        { label: '快递名称', value: value(this.shipment.carrier) }];
+        { label: '快递名称', value: value(this.shipment.carrier) },
+        { label: '派送员电话', value: courierPhones(this.shipment).map(contact => contact.text).join('、') || '未提供', phone: true }];
     },
     latest() { return (this.shipment.logisticsEvents || []).slice().sort((a, b) => Number(b.time || 0) - Number(a.time || 0))[0]; },
     logisticsStatus() { if (this.shipment.picked) return this.shipment.isHomeDelivery ? '已签收' : '已取件'; return ({ arrived: '已到站', awaiting_code: '已到站', transit: '运输中', signed: '已签收', returning: '退回中', returned: '已退回' })[this.shipment.status] || this.status; }
