@@ -1,5 +1,7 @@
 # Android App 发布与在线升级
 
+App **3.1.49 / 30149** 与后台 **3.1.49**：待取件列表直接展示送到门口的待确认包裹；京东、顺丰明确门口送达事件作为到货时间，用户确认收到后记录签收时间。旧运单别名退出重复识别和重试。插件保持 **1.2.1**，见[本轮说明](backend-release-3.1.49.md)。
+
 App **3.1.48 / 30148** 与后台 **3.1.48** 发布审计修复，插件保持 **1.2.1**。修复未收反证、PDD 漏运单、原生上报与回执、隐私边界、键盘操作和开发工具。见[本轮说明及剩余风险](backend-release-3.1.48.md)。
 
 手机优先读取已绑定后台内置的 `app-update.json`，后台缺包、不可用或没有更新版本时读取本仓库Latest Release，下载安装包后交给Android确认。更新不依赖Docker账号或Cookie。App 3.1.4首次需手动覆盖安装，后续使用「我的 → 检查更新」。旧私人版不要卸载；覆盖安装保留绑定、短信和领取记录。
@@ -16,9 +18,9 @@ App继续保留3.1.37的本地缓存优先、快照复用与同步去重，见 [
 
 `https://github.com/zsdd2/kdyzm/releases/latest/download/app-update.json`
 
-本轮App版本为 `3.1.48` / `30148`，沿用原签名，发布入口为 [App 3.1.48 Release](https://github.com/zsdd2/kdyzm/releases/tag/app-v3.1.48)。稳定版保持为Latest Release，供旧App检查与下载。
+本轮App版本为 `3.1.49` / `30149`，沿用原签名，发布入口为 [App 3.1.49 Release](https://github.com/zsdd2/kdyzm/releases/tag/app-v3.1.49)。稳定版保持为Latest Release，供旧App检查与下载。
 
-本轮配套升级App及后台：拉取 `ghcr.io/zsdd2/kdyzm:3.1.48` 或 `ghcr.io/zsdd2/kdyzm:latest`，保留原数据卷、加密密钥和配置重建容器。覆盖安装App 3.1.48，插件1.2.1无需更新，无需清库、卸载App或重新绑定。NAS由使用者手动更新；发布仓库和镜像不会自动替换现有容器。
+本轮配套升级App及后台：拉取 `ghcr.io/zsdd2/kdyzm:3.1.49` 或 `ghcr.io/zsdd2/kdyzm:latest`，保留原数据卷、加密密钥和配置重建容器。覆盖安装App 3.1.49，插件1.2.1无需更新，无需清库、卸载App或重新绑定。NAS由使用者手动更新；发布仓库和镜像不会自动替换现有容器。
 
 自App3.1.18起优先从已绑定后台检查与下载，后台缺包、不可用或版本不高于已安装App时查询GitHub；内置目录由构建期脚本完整校验。详见 [后台优先升级](backend-app-updates-3.1.15.md)。
 

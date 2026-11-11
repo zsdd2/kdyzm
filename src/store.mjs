@@ -4,7 +4,7 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { encryptCookie, decryptCookie, hash, secret, fail, text, onlyKeys } from './security.mjs';
 import { serverVersion, capabilities } from './version.mjs';
-import { corroborateTaobaoEventTimes, genericPickupStation, pickupCycleReset, pickupEvidence, eventStatus, providerEventFields, mergeProviderEventFields, logisticsEventTimeIssue, logisticsTimePrecision } from './collector-enrichment.mjs';
+import { corroborateTaobaoEventTimes, doorstepEvidence, genericPickupStation, pickupCycleReset, pickupEvidence, eventStatus, providerEventFields, mergeProviderEventFields, logisticsEventTimeIssue, logisticsTimePrecision } from './collector-enrichment.mjs';
 import { PickupCompletionStore } from './pickup-completion-store.mjs';
 import { effectivePicked, pickupCompletionState } from './pickup-completion.mjs';
 import { normalizeRetentionFields, orderRetention, retainedSignedShipment, validRetentionDate } from './order-retention.mjs';
@@ -50,9 +50,9 @@ function logisticsData(input, old = {}, reuseEvents = false, rules, now) {
     logisticsUpdatedAt: Math.max(old.logisticsUpdatedAt || 0, !reuseEvents && state === 'ok' && supplied.some(e => e?.description) ? validTime(input.logisticsUpdatedAt) || checkedAt : 0),
     logisticsTruncated: !!(input.logisticsTruncated || old.logisticsTruncated || events.length > 100) };
 }
-function pickupData(input = {}, old = {}, events = [], rules, now = Date.now()) {
-  if (input.logisticsCheckedAt && input.logisticsCheckedAt < (old.logisticsCheckedAt || 0)) return pickupData({}, old, [], rules, now);
-  if (input.arrivalAtSource === 'platform_event' && events.some(event => event.time === input.arrivalAt && logisticsEventTimeIssue(event, now) === 'timeConflict')) return pickupData({}, old, [], rules, now);
+function pickupData(input = {}, old = {}, events = [], rules, now = Date.now(), platform) {
+  if (input.logisticsCheckedAt && input.logisticsCheckedAt < (old.logisticsCheckedAt || 0)) return pickupData({}, old, [], rules, now, platform);
+  if (input.arrivalAtSource === 'platform_event' && events.some(event => event.time === input.arrivalAt && logisticsEventTimeIssue(event, now) === 'timeConflict')) return pickupData({}, old, [], rules, now, platform);
   const source = value => ['platform_event', 'locker_arrival', 'locker_created'].includes(value) ? value : 'unknown';
   const precision = value => ['second', 'minute'].includes(value) ? value : 'unknown';
   const inputArrival = validTime(input.arrivalAt) && input.arrivalAt <= now ? input.arrivalAt : 0;
@@ -64,7 +64,9 @@ function pickupData(input = {}, old = {}, events = [], rules, now = Date.now()) 
     arrivalAtPrecision: arrivalAt ? precision(explicitArrival ? input.arrivalAtPrecision : old.arrivalAtPrecision) : 'unknown', station,
     stationSource: station ? ['platform_event', 'locker'].includes(input.stationSource) && input.station ? input.stationSource
       : station === old.station && ['platform_event', 'locker'].includes(old.stationSource) ? old.stationSource : 'unknown' : 'unknown' };
-  const evidence = pickupEvidence(events.map(event => logisticsEventTimeIssue(event, now) === 'timeConflict' ? { ...event, time: 0 } : event), rules);
+  const doorstep = doorstepEvidence(events, { platform, carrier: input.carrier || old.carrier }, now);
+  const pickup = pickupEvidence(events.map(event => logisticsEventTimeIssue(event, now) === 'timeConflict' ? { ...event, time: 0 } : event), rules);
+  const evidence = doorstep.arrivalAt > pickup.arrivalAt ? doorstep : pickup;
   const reset = events.some(event => pickupCycleReset(event.description || '') && (!event.time || event.time <= now) && (!event.time || !arrivalAt || event.time >= arrivalAt));
   const newCycle = events.some(event => pickupCycleReset(event.description || '') && (!event.time || event.time <= now) && (!event.time || event.time >= validTime(old.arrivalAt)));
   const stationConflict = input.station && old.station && ['platform_event', 'locker'].includes(input.stationSource)
@@ -72,8 +74,8 @@ function pickupData(input = {}, old = {}, events = [], rules, now = Date.now()) 
   if (evidence.arrivalAt && (!explicitArrival || evidence.arrivalAt >= arrivalAt)) {
     const keepSpecificStation = !newCycle && station && !genericPickupStation(station) && genericPickupStation(evidence.station);
     const useEvidenceStation = evidence.station && !keepSpecificStation;
-    result = { ...evidence, station: useEvidenceStation ? evidence.station : newCycle ? '' : station,
-      stationSource: useEvidenceStation ? evidence.stationSource : newCycle ? 'unknown' : result.stationSource };
+    result = { ...evidence, station: useEvidenceStation ? evidence.station : newCycle || evidence === doorstep ? '' : station,
+      stationSource: useEvidenceStation ? evidence.stationSource : newCycle || evidence === doorstep ? 'unknown' : result.stationSource };
   }
   else if (reset || (!explicitArrival && stationConflict)) result = evidence;
   else if (rules && input.logisticsState === 'ok' && input.logisticsEvents?.length && !explicitArrival
@@ -325,10 +327,13 @@ export class Store {
         const old = parse(row), events = old.logisticsEvents || [];
         if (!events.length || old.stationSource === 'locker' || ['locker_arrival', 'locker_created'].includes(old.arrivalAtSource)) continue;
         if (events.some(event => logisticsEventTimeIssue(event, this.now()) === 'timeConflict')) continue;
-        const evidence = pickupEvidence(events, rules);
-        const pickup = evidence.arrivalAt ? pickupData({ logisticsState: 'ok', logisticsEvents: events, arrivalAt: 0 }, old, events, rules, this.now()) : evidence;
+        const platform = this.account(old.accountId)?.platform;
+        const doorstep = doorstepEvidence(events, { platform, carrier: old.carrier }, this.now());
+        const station = pickupEvidence(events, rules);
+        const evidence = doorstep.arrivalAt > station.arrivalAt ? doorstep : station;
+        const pickup = evidence.arrivalAt ? pickupData({ logisticsState: 'ok', logisticsEvents: events, arrivalAt: 0 }, old, events, rules, this.now(), platform) : evidence;
         const fallback = old.status === 'arrived' && old.arrivalAtSource === 'platform_event' ? 'unknown' : old.status;
-        const status = this.account(old.accountId)?.platform === 'jd' ? jdShipmentStatus(events, fallback, rules, this.now(), fallback === 'arrived' && !!old.pickupCode)
+        const status = platform === 'jd' ? jdShipmentStatus(events, fallback, rules, this.now(), fallback === 'arrived' && !!old.pickupCode)
           : eventStatus(events[0].description, fallback, rules);
         if (status === old.status && Object.keys(pickup).every(key => pickup[key] === old[key])) continue;
         const updated = this.pickupCompletion.project({ ...old, ...pickup, status, updatedAt: this.now() });
@@ -554,7 +559,7 @@ export class Store {
   importResult(accountId, result, { partial = false, reconcile = true } = {}) {
     const rules = result.logisticsRules ?? this.getLogisticsRules?.();
     const completionRules = this.pickupCompletion.rules(), completionConfig = this.pickupCompletion.config();
-    const parserKey = hash(JSON.stringify(['shipment-lifecycle-v4', rules, completionRules, completionConfig]));
+    const parserKey = hash(JSON.stringify(['shipment-lifecycle-v5', rules, completionRules, completionConfig]));
     const changedShipmentIds = [];
     const account = this.account(accountId);
     if (!account) fail(404, 'NOT_FOUND', '账号不存在');
@@ -672,7 +677,7 @@ export class Store {
             (!event.provider || event.provider === 'taobao') && logisticsTimePrecision(event.timeText) !== 'unknown' && !logisticsEventTimeIssue(event, this.now())), this.now(),
             { allowLegacy: true, notBefore: order.orderDateOrigin === 'detail' ? order.orderDate || 0 : 0 }) } : old;
         const logistics = staleLogistics ? logisticsData({}, old, false, rules, this.now()) : logisticsData(input, datedOld, false, rules, this.now());
-        const pickup = staleLogistics ? pickupData({}, old || {}, old?.logisticsEvents || [], rules, this.now()) : pickupData(input, old || {}, logistics.logisticsEvents, rules, this.now());
+        const pickup = staleLogistics ? pickupData({}, old || {}, old?.logisticsEvents || [], rules, this.now(), account.platform) : pickupData(input, old || {}, logistics.logisticsEvents, rules, this.now(), account.platform);
         const cycleState = staleLogistics ? pickupCycleData(id, input, old || {}, old?.logisticsEvents || [], this.now())
           : pickupCycleData(id, input, old || {}, logistics.logisticsEvents, this.now());
         const { cycleChanged, ...cycle } = cycleState;
@@ -742,7 +747,9 @@ export class Store {
     const shipments = this.db.prepare('SELECT data FROM shipments ORDER BY id').all().map(parse).filter(visible)
       .filter(shipment => this.shipmentAlias(shipment.id).id === shipment.id).map(s => {
       // Configured services publish evidence persisted by imports or explicit rule changes.
-      const pickup = pickupData({}, s, this.getLogisticsRules ? [] : s.logisticsEvents || [], undefined, this.now());
+      const platform = orderById.get(s.orderId)?.platform;
+      const legacyDoorstep = !validTime(s.arrivalAt) ? doorstepEvidence(s.logisticsEvents, { platform, carrier: s.carrier }, this.now()) : {};
+      const pickup = pickupData(legacyDoorstep, s, this.getLogisticsRules ? [] : s.logisticsEvents || [], undefined, this.now(), platform);
       const { pickupCycleHistory, logisticsEvidenceHash, shippedAt, shippedAtSource, shippedAtPrecision, pickupManualAt, pickupManualOperation, pickupManualAction, pickupConfirmedAt, ...publicShipment } = s;
       // Imports persist both proven timestamps and explicit unknowns; only legacy rows need parsing here.
       let shipping = {};

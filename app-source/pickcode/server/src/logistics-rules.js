@@ -184,6 +184,30 @@ var PickCodeLogistics = (function () {
     }
     empty.station = station; empty.stationSource = station ? 'platform_event' : 'unknown'; return empty;
   }
+  function doorstepEvidence(events, shipment, now) {
+    // Doorstep delivery dates arrival; recipient collection still needs its own evidence or confirmation.
+    var empty = { arrivalAt: 0, arrivalAtSource: 'unknown', arrivalAtPrecision: 'unknown', station: '', stationSource: 'unknown' };
+    var carrier = text(shipment && shipment.carrier).toUpperCase().replace(/[\s._-]+/g, ''), i, event, description;
+    if ((!shipment || shipment.platform !== 'jd') && !/京东|顺丰|^(?:JD|SF)(?:EXPRESS)?$/.test(carrier)) return empty;
+    now = typeof now === 'number' ? now : Date.now();
+    events = (Array.isArray(events) ? events : []).slice().sort(function (a, b) { return (b.time || 0) - (a.time || 0); });
+    if (events.some(function (item) { return eventTimeIssue(item, now) === 'unknownTime'
+      && (pickupCycleReset(item.description) || pickupArrivalEvent(item.description) || POINT.test(item.description) && eventStatus(item.description) === 'arrived'); })) return empty;
+    for (i = 0; i < events.length; i++) {
+      event = events[i]; description = text(event.description);
+      if (event.time > now) continue;
+      if (pickupCycleReset(description) || pickupArrivalEvent(description) || POINT.test(description) && eventStatus(description) === 'arrived') return empty;
+      if (!/门口|门外/.test(description) || !homeDeliveryCompleted(description)
+        || POINT.test(description) || /代收|代签|门卫|保安|前台|邻居|转运|分拣|分拨|物流中心|联系不上|无法联系|未联系上|取消|撤销|疑似|可能|是否|[?？]/.test(description)
+        || UNREALIZED.test(description) || FUTURE.test(description)) continue;
+      if (['unknownTime', 'timeConflict'].indexOf(eventTimeIssue(event, now)) >= 0) return empty;
+      if (events.some(function (other) { return other.time === event.time && text(other.description) === description
+        && eventTimeIssue(other, now) === 'timeConflict'; })) return empty;
+      return { arrivalAt: event.time, arrivalAtSource: 'platform_event', arrivalAtPrecision: ['second', 'minute', 'unknown'].indexOf(event.timePrecision) >= 0 ? event.timePrecision : timePrecision(event.timeText),
+        station: '', stationSource: 'unknown' };
+    }
+    return empty;
+  }
   function catalogStationKey(value) {
     var digits = {'零':0,'〇':0,'一':1,'二':2,'两':2,'三':3,'四':4,'五':5,'六':6,'七':7,'八':8,'九':9};
     value = text(value); if (value.normalize) value = value.normalize('NFKC');
@@ -323,7 +347,7 @@ var PickCodeLogistics = (function () {
     return output;
   }
   return { defaults: defaults, validateRule: validateRule, validateRules: validateRules, pickupStation: pickupStation, pickupArrivalEvent: pickupArrivalEvent,
-    pickupEvidence: pickupEvidence, eventTimeIssue: eventTimeIssue, catalogStation: catalogStation, catalogPickupEvidence: catalogPickupEvidence, eventStatus: eventStatus, homeDeliveryCompleted: homeDeliveryCompleted, genericPickupStation: genericPickupStation,
+    pickupEvidence: pickupEvidence, doorstepEvidence: doorstepEvidence, eventTimeIssue: eventTimeIssue, catalogStation: catalogStation, catalogPickupEvidence: catalogPickupEvidence, eventStatus: eventStatus, homeDeliveryCompleted: homeDeliveryCompleted, genericPickupStation: genericPickupStation,
     pickupCycleReset: pickupCycleReset, test: function (rule, sample) {
       var draft = {}, key;
       if (rule && typeof rule === 'object' && !Array.isArray(rule)) {

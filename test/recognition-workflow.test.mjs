@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { Store } from '../src/store.mjs';
 import { RecognitionWorkflow, recognitionMethod, recognitionProblems } from '../src/recognition-workflow.mjs';
 import { RecognitionAi } from '../src/recognition-ai.mjs';
+import { createRecognitionApi } from '../src/recognition-api.mjs';
 import '../app-source/pickcode/core/load-core.mjs';
 
 const NOW = Date.parse('2026-11-10T03:00:00+08:00'), MINUTE = 60000, DAY = 86400000;
@@ -186,6 +187,45 @@ test('daily local scan discovers issues with AI disabled; summaries and repeated
   assert.equal(f.workflow.tasks().length, 1); assert.equal(f.requests.length, 0); assert.equal(f.analyses.length, 0);
   const before = JSON.stringify(f.workflow.tasks()); f.workflow.summary(); assert.equal(JSON.stringify(f.workflow.tasks()), before);
   assert.equal(f.workflow.dailyRun().status, 'complete'); assert.equal(f.workflow.summary().groups[0].methodVersion, 1);
+});
+
+test('review excludes historical shipment aliases while preserving the canonical shipment scope', async t => {
+  for (const picked of [false, true]) await t.test(`canonical picked=${picked}`, async t => {
+    const f = fixture(t), shipment = f.add({}, 'pdd'), legacy = { ...shipment, id: 'legacy-pdd-shipment' };
+    f.store.db.prepare('INSERT INTO shipments VALUES(?,?,?)').run(legacy.id, legacy.accountId, JSON.stringify(legacy));
+    f.store.saveShipmentAlias(legacy.id, shipment.id, { reason: 'confirmed', evidence: 'same platform package' });
+    f.patch(shipment, { picked });
+    const api = createRecognitionApi({ store: f.store, workflow: f.workflow, now: f.now,
+      recognitionAi: { reviews: () => [] }, stations: { aiConfig: () => ({ enabled: false }), revision: 1 },
+      logisticsRules: { read: () => ({ revision: 1 }) }, logisticsDaily: { summary: () => ({}) } });
+    assert.deepEqual(api.review().samples.map(sample => sample.shipmentId), picked ? [] : [shipment.id]);
+    await f.workflow.daily();
+    assert.deepEqual(f.workflow.tasks().map(task => task.shipmentId), picked ? [] : [shipment.id]);
+    assert.equal(f.store.shipment(legacy.id).picked, false, 'the historical source remains unchanged');
+  });
+});
+
+test('historical shipment aliases stop retries and AI work without changing canonical task progress', async t => {
+  for (const status of ['pending', 'ai_pending', 'review']) for (const picked of [false, true]) await t.test(`${status}, canonical picked=${picked}`, async t => {
+    const f = fixture(t, { analyze: () => ({ status: 'disabled', reasonCode: 'AI_LOGISTICS_DISABLED' }) });
+    const shipment = f.add({}, 'pdd'), legacy = { ...shipment, id: 'legacy-pdd-shipment' };
+    f.store.db.prepare('INSERT INTO shipments VALUES(?,?,?)').run(legacy.id, legacy.accountId, JSON.stringify(legacy));
+    f.workflow.observe({ shipments: [legacy, shipment] });
+    const original = f.workflow.tasks().find(task => task.shipmentId === legacy.id);
+    const task = f.workflow.save({ ...original, status, retryCount: status === 'pending' ? 0 : 3,
+      aiAttempts: status === 'review' ? 1 : 0, reasonCode: status === 'ai_pending' ? 'AI_LOGISTICS_DISABLED' : original.reasonCode });
+    f.store.saveShipmentAlias(legacy.id, shipment.id, { reason: 'confirmed', evidence: 'same platform package' });
+    f.patch(shipment, { picked });
+    f.advance(5 * MINUTE); await f.run();
+    const current = f.workflow.task(task.id), canonical = f.workflow.tasks().find(task => task.shipmentId === shipment.id);
+    assert.equal(current.status, 'ignored'); assert.equal(current.reasonCode, 'SOURCE_INACTIVE'); assert.equal(current.nextRetryAt, 0);
+    assert.equal(current.retryCount, task.retryCount); assert.equal(current.aiAttempts, task.aiAttempts);
+    assert.equal(f.workflow.allowAutomatic(legacy), false); assert.equal(f.analyses.length, 0);
+    assert.equal(canonical.status, picked ? 'ignored' : 'pending'); assert.equal(canonical.retryCount, picked ? 0 : 1);
+    assert.equal(f.requests.length, picked ? 0 : 1);
+    assert.equal(f.workflow.tasks().length, 2, 'daily observation does not reopen or duplicate the alias task');
+    assert.equal(f.store.shipment(legacy.id).picked, false, 'closing recognition does not rewrite historical shipment data');
+  });
 });
 
 test('initial failure plus three completed collection retries use five, ten and fifteen minute gaps and survive restart', async t => {

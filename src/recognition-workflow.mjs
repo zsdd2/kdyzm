@@ -71,7 +71,7 @@ export class RecognitionWorkflow {
   }
   scope(shipmentId) {
     const shipment = this.store.shipment(shipmentId), order = shipment && this.store.order(shipment.orderId), account = shipment && this.store.account(shipment.accountId);
-    if (!shipment || !order || !account || order.accountId !== shipment.accountId || shipment.picked || shipment.pickupCompletion?.autoPicked
+    if (!shipment || this.store.shipmentAlias(shipment.id).id !== shipment.id || !order || !account || order.accountId !== shipment.accountId || shipment.picked || shipment.pickupCompletion?.autoPicked
       || shipment.hidden || shipment.deleted || shipment.archived || ['returned', 'returning'].includes(shipment.status)
       || order.hidden || order.deleted || orderRetention(order, this.now()).archived) return { closed: true, reasonCode: 'SOURCE_INACTIVE' };
     if (!account.enabled || account.status === 'expired') return { shipment, order, account, blocked: true, reasonCode: account.enabled ? 'ACCOUNT_EXPIRED' : 'ACCOUNT_DISABLED' };

@@ -45,7 +45,24 @@
         <button role="button" tabindex="0" :aria-pressed="pickupGrouping === 'station'" @click.stop="setPickupGrouping('station')" @keydown.enter.prevent.stop="!$event.repeat && setPickupGrouping('station')" @keydown.space.prevent.stop="$event.preventDefault()" @keyup.space.prevent.stop="setPickupGrouping('station')">按站点</button>
         <button role="button" tabindex="0" :aria-pressed="pickupGrouping === 'time'" @click.stop="setPickupGrouping('time')" @keydown.enter.prevent.stop="!$event.repeat && setPickupGrouping('time')" @keydown.space.prevent.stop="$event.preventDefault()" @keyup.space.prevent.stop="setPickupGrouping('time')">按时间</button>
       </view>
-      <view v-if="hydrated && !pickupSections.length" class="pickup-empty">暂无待取记录</view>
+      <view v-if="receiptDeliveries.length" class="card code-card">
+        <view class="card-header sf-surface">
+          <h2 class="card-title receipt-heading">送达待确认</h2>
+          <text class="card-extra"><text class="pending-count">{{ receiptDeliveries.length }}</text> 件待确认</text>
+        </view>
+        <view role="list">
+          <view v-for="(entry, index) in receiptDeliveries" :key="entry.shipment.id" class="code-item receipt-card sf-surface" role="listitem">
+            <view class="pickup-card-head">
+              <text class="family-badge" :class="{ unassigned: !entry.order.familyId }" :style="pickupFamilyStyle(entry.order.familyId)">{{ entry.order.familyName || '待归属' }}</text>
+              <text class="pickup-platform">{{ platformName(entry.order.platform) }}<template v-if="entry.shipment.carrier"> · {{ entry.shipment.carrier }}</template></text>
+            </view>
+            <view class="receipt-copy"><text class="receipt-title">{{ entry.order.title || '包裹' }}</text><text class="receipt-status">已送达·待确认</text></view>
+            <button class="picked-btn receipt-confirm" role="button" :tabindex="canConfirmReceipt(entry) ? 0 : -1" data-notification-control :data-receipt-confirm="entry.shipment.id" :aria-label="'确认收到 ' + (entry.order.title || '包裹') + ' 包裹' + (index + 1)" :disabled="!canConfirmReceipt(entry)" :aria-busy="confirmingReceiptId === entry.shipment.id" @click.stop="confirmReceipt(entry)">确认收到</button>
+            <view class="pickup-journeys"><ParcelJourney :journey="entry.journey" /></view>
+          </view>
+        </view>
+      </view>
+      <view v-if="hydrated && !pickupSections.length && !receiptDeliveries.length" class="pickup-empty">暂无待取记录</view>
       <template v-for="section in pickupSections" :key="pickupGrouping + ':' + section.key">
         <view class="card code-card">
           <view class="card-header sf-surface" @click="toggleCompletedSection(section)">
@@ -329,7 +346,7 @@ export default {
     },
     expandedGroups() { return Object.assign(Object.create(null), this.pickupGrouping === 'station' ? this.expandedStations : this.expandedDates); },
     receiptDeliveries() {
-      return (this.snapshot.packages || []).filter(order => order.source === 'online' && !order.hidden && !shouldArchivePackage(order)).flatMap(order => (order.shipments || []).filter(shipment => shipment.needsReceiptConfirmation && !shipment.picked && !shipment.hidden).map(shipment => ({ order, shipment })));
+      return (this.snapshot.packages || []).filter(order => order.source === 'online' && !order.hidden && !shouldArchivePackage(order)).flatMap(order => (order.shipments || []).filter(shipment => shipment.needsReceiptConfirmation && !shipment.picked && !shipment.hidden).map(shipment => ({ order, shipment, journey: parcelJourney(shipment, order) })));
     }
   },
   onLoad(options) { this.pendingPickupId=options?.pickupId || ''; uni.$on('assistant-changed', this.applySnapshot); uni.$on('assistant-sync-status', this.applySyncStatus); if(typeof window!=='undefined')window.addEventListener('pickcode-open-pickup',this.openPickupIntent); },
@@ -698,6 +715,14 @@ button[disabled] { opacity:.55; }
 .address-text { min-width:0; overflow-wrap:anywhere; }
 .code-item { --cabinet-width:72px; --action-width:76px; position:relative; display:grid; grid-template-columns:var(--cabinet-width) minmax(0,1fr) var(--action-width); column-gap:12px; row-gap:2px; margin-bottom:12px; padding:10px 14px 14px; border-radius:24px; }
 .code-item.menu-open { z-index:5; }
+.receipt-heading { margin:0; }
+.receipt-card { grid-template-columns:minmax(0,1fr) auto; }
+.receipt-card .pickup-card-head { padding-right:0; }
+.receipt-copy { grid-column:1; grid-row:2; min-width:0; align-self:center; }
+.receipt-title { display:block; color:var(--sf-text); font-size:.9375rem; line-height:1.5; overflow-wrap:anywhere; }
+.receipt-status { display:block; margin-top:5px; color:var(--sf-muted); font-size:.75rem; line-height:1.5; }
+.receipt-card .receipt-confirm { grid-column:2; grid-row:2; align-self:center; width:auto; min-width:88px; padding-inline:10px; font-size:.875rem; }
+.receipt-confirm[disabled] { opacity:.55; }
 .code-content, .code-main, .code-info, .right-actions { display:contents; }
 .pickup-card-head { grid-column:1 / -1; grid-row:1; display:flex; align-items:center; flex-wrap:wrap; gap:5px 9px; min-width:0; min-height:34px; padding-right:34px; margin-bottom:4px; }
 .code-families { display:flex; flex-wrap:wrap; gap:5px; min-width:0; }

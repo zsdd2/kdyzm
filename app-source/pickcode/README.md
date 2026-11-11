@@ -1,4 +1,4 @@
-# 取件助手 App 3.1.48 公开源码
+# 取件助手 App 3.1.49 公开源码
 
 这是已授权发布的 Android / Vue App 生产源码快照。源于 [SongZX0106/PickCode](https://github.com/SongZX0106/PickCode) 的提交 `07f9fed59122d7f2210a825aadedc2a913a83176`，包含当前私人取件助手的后续实现与 B 版界面。原木兰宽松许可证保留在 [LICENSE](LICENSE)。运行源码保持与构建工作区字节一致；`SOURCE-MANIFEST.json` 记录逐文件 SHA-256。
 

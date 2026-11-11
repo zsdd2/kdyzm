@@ -190,6 +190,7 @@ export const pickupCycleReset = logistics.pickupCycleReset;
 export const pickupStation = logistics.pickupStation;
 export const pickupArrivalEvent = logistics.pickupArrivalEvent;
 export const pickupEvidence = logistics.pickupEvidence;
+export const doorstepEvidence = logistics.doorstepEvidence;
 export const eventStatus = logistics.eventStatus;
 
 export function activeKnownParcels(order) {

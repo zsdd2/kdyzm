@@ -4,7 +4,7 @@
 import { createHash } from 'node:crypto';
 import { normalizeProductImageUrl } from './product-image.mjs';
 import { discoverPddSplit, fetchPddSplitTrack, fetchPddSplitCabinet, pddOrderMatches, pddWaybillMatches } from './pdd-split.mjs';
-import { activeKnownOrders, activeKnownParcels, isActiveKnownOrder, anchorTaobaoEventTimes, corroborateTaobaoEventTimes, eventStatus, homeDeliveryCompleted, logisticsEventTimeIssue, logisticsTimestamp, logisticsTimePrecision, normalizeLogisticsEvents, orderTimePrecision, pddShippingEvents, pickupCycleReset, pickupEvidence, taobaoDetailDateEvidence, taobaoStageEvents, taobaoTimeAnchorCandidate, taobaoTransitEvents } from './collector-enrichment.mjs';
+import { activeKnownOrders, activeKnownParcels, isActiveKnownOrder, anchorTaobaoEventTimes, corroborateTaobaoEventTimes, doorstepEvidence, eventStatus, homeDeliveryCompleted, logisticsEventTimeIssue, logisticsTimestamp, logisticsTimePrecision, normalizeLogisticsEvents, orderTimePrecision, pddShippingEvents, pickupCycleReset, pickupEvidence, taobaoDetailDateEvidence, taobaoStageEvents, taobaoTimeAnchorCandidate, taobaoTransitEvents } from './collector-enrichment.mjs';
 import { jdShipmentStatus } from './shipment-lifecycle.mjs';
 
 const APPKEY = '12574478';
@@ -164,7 +164,9 @@ function stageText(stage) {
 function codeOf(value) { return value.match(/(?:取件码|取货码|提货码|自提码)\s*(?:是|为)?\s*[:：]?\s*([A-Za-z0-9][A-Za-z0-9-]{3,15})/)?.[1] || ''; }
 function arrivalEvidence(value, rules) { return eventStatus(value, 'unknown', rules) === 'arrived'; }
 function applyTrackEvidence(parcel, events, rules) {
-  const evidence = pickupEvidence(events, rules);
+  const doorstep = doorstepEvidence(events, parcel, parcel.logisticsCheckedAt);
+  const pickup = pickupEvidence(events, rules);
+  const evidence = doorstep.arrivalAt > pickup.arrivalAt ? doorstep : pickup;
   const reset = events.some(event => pickupCycleReset(event.description) && (!event.time || !parcel.arrivalAt || event.time >= parcel.arrivalAt));
   const stationConflict = evidence.station && parcel.station
     && evidence.station.replace(/[\s\p{P}]/gu, '') !== parcel.station.replace(/[\s\p{P}]/gu, '');
@@ -244,13 +246,16 @@ export function taobaoParcels(fields, platformOrderId, fallbackCode = '', rules,
     const latestSigned = homeDeliveryCompleted(latest) || (!latestTransitTitle && /^(?:签收|已签收|签收成功)$/.test(latestTitle)) || (!latestTransitTitle && latestBodySigned);
     const status = latestAtPickupPoint ? 'arrived' : latestSigned ? 'signed' : latestTransit ? 'transit' : arrived ? 'arrived' : 'unknown';
     const { events: logisticsEvents, truncated: logisticsTruncated } = taobaoStageEvents(allStages, timestamp, stageText, rules, checkedAt);
-    const evidence = pickupEvidence(stages.filter(stage => stage && !/^送至/.test(asText(stage.title))).map(stage => {
+    const carrier = asText(parcel.cpName || CARRIERS[parcel.cpCode] || selected.logisticCompany?.name || parcel.cpCode);
+    const pickup = pickupEvidence(stages.filter(stage => stage && !/^送至/.test(asText(stage.title))).map(stage => {
       const rawTime = stage.time || stage.date || stage.occurTime || stage.subtitle;
       const description = `${stage.title || ''}：${stageText(stage)}`;
       return { time: logisticsTimestamp(rawTime, timestamp), timePrecision: logisticsTimePrecision(rawTime), description,
         station: arrivalEvidence(description, rules) ? [stage.cardDesc?.title, stage.cardDesc?.subTitle].filter(Boolean).join(' ') : '' };
     }), rules);
-    return { platformOrderId, waybillNo: parcel.mailNo, carrier: asText(parcel.cpName || CARRIERS[parcel.cpCode] || selected.logisticCompany?.name || parcel.cpCode),
+    const doorstep = doorstepEvidence(logisticsEvents, { carrier }, checkedAt);
+    const evidence = doorstep.arrivalAt > pickup.arrivalAt ? doorstep : pickup;
+    return { platformOrderId, waybillNo: parcel.mailNo, carrier,
       pickupCode, ...evidence, status, logisticsEvents, logisticsTruncated,
       logisticsState: logisticsEvents.length ? 'ok' : specific || selected === fields ? 'empty' : 'unavailable' };
   });
@@ -846,7 +851,9 @@ export function jdParcels(data, platformOrderId, checkedAt, rules) {
         if (event.time > 0 && event.time <= checkedAt && (pickupCode = codeOf(event.description))) break;
       }
     }
-    const evidence = status === 'signed' ? pickupEvidence([], rules) : pickupEvidence(usable, rules);
+    const doorstep = doorstepEvidence(usable, { platform: 'jd' }, checkedAt);
+    const pickup = status === 'signed' ? pickupEvidence([], rules) : pickupEvidence(usable, rules);
+    const evidence = doorstep.arrivalAt > pickup.arrivalAt ? doorstep : pickup;
     return [{ platformOrderId, waybillNo, carrier: asText(carriage.carrier), status, pickupCode,
       ...evidence,
       logisticsEvents: events, logisticsTruncated: truncated, logisticsState: events.length ? 'ok' : 'empty',

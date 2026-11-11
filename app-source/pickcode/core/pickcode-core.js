@@ -1146,7 +1146,7 @@ var PickCodeCore = (function () {
     return s.status;
   }
   // Bump when bundled logistics parsing changes so persisted projections are reevaluated independently of user rules.
-  var logisticsProjectionVersion=4;
+  var logisticsProjectionVersion=5;
   var logisticsFields=['status','station','stationSource','arrivalAt','arrivalAtSource','arrivalAtPrecision'];
   function restorePlatformLogistics(s) {
     if(s.platformLogistics)logisticsFields.forEach(function(key){s[key]=s.platformLogistics[key];});
@@ -1171,6 +1171,7 @@ var PickCodeCore = (function () {
       var events=s.logisticsEvents||[];
       if(!events.length||s.picked||s.pickupCompletion&&s.pickupCompletion.autoPicked||s.hidden||s.deleted||shipmentArchived(state,s)||s.arrivalAtSource==='locker_arrival'||s.stationSource==='locker')return;
       if(events.some(function(event){return logistics.eventTimeIssue(event,Date.now())==='timeConflict';}))return;
+      if(undatedPickupTransition(events)==='arrival'&&!timestamp(s.platformLogistics.arrivalAt)&&s.platformLogistics.status==='arrived'&&s.platformLogistics.station&&s.platformLogistics.stationSource==='platform_event')return;
       var knownStation=recognizeStation(state,s.station).id||activeCorrection(state,s);
       var catalogEvidence=!knownStation||!trustedArrival(s)?logistics.catalogPickupEvidence(events,state.stationRules,rules):null;
       if(catalogEvidence&&(!catalogEvidence.arrivalAt||catalogEvidence.arrivalAt>Date.now()))catalogEvidence=null;
@@ -1193,13 +1194,19 @@ var PickCodeCore = (function () {
       if(evidence.arrivalAt&&(catalogEvidence||logistics.pickupArrivalEvent(events[0].description,evidence.station,rules)))s.status='arrived';
     });
   }
+  function undatedPickupTransition(events) {
+    var undated=events.filter(function(event){return logistics.eventTimeIssue(event,Date.now())==='unknownTime';});
+    if(undated.some(function(event){return logistics.pickupCycleReset(event.description);}))return 'reset';
+    return undated.some(function(event){return logistics.pickupArrivalEvent(event.description)||
+      /驿站|代收点|自提点|自提站|自提柜|快递柜|快递超市|智能柜|丰巢|菜鸟|门店|便利店/.test(event.description)&&logistics.eventStatus(event.description)==='arrived';})?'arrival':'';
+  }
   function shipmentDisposition(s) {
     var events=logisticsEvents(s.logisticsEvents),latest=events[0];
     if(!latest||!latest.time||latest.time>Date.now())return null;
     var description=latest.description;
     if(/预计|即将|将于|申请|预约|准备|是否|疑似|请|未退|没有退|取消退|无需退|未送|没有送|尚未|送达失败/.test(description))return null;
     var kind=/已退(?:回|货)|退(?:回|货).{0,12}(?:完成|签收)|发件人已签收退件/.test(description)?'returned':/退回中|退货中|退件运输|退货运输|正在退回|已拒收|已拒签|已拒绝?签收|已退件|拒收退回|退回发件人/.test(description)?'returning':/已(?:经)?(?:成功)?(?:送(?:到|至|达)|派送(?:到|至)|放(?:在|到|至)?|投递(?:到|至)).{0,16}(?:门口|门前|家中|家里|住处)/.test(description)&&!/驿站|代收点|快递柜|自提柜/.test(description)?'doorstep':'';
-    return kind?{kind:kind,eventTime:latest.time,description:description}:null;
+    return kind&&!(kind==='doorstep'&&undatedPickupTransition(events))?{kind:kind,eventTime:latest.time,description:description}:null;
   }
   function actualPickupCycleReset(event) {
     var at=timestamp(event.time);
@@ -1212,16 +1219,19 @@ var PickCodeCore = (function () {
     var atHome=!currentPickupPoint&&/已(?:经)?(?:成功)?(?:送(?:到|至|达)|派送(?:到|至)|放(?:在|到|至)?|投递(?:到|至)).{0,16}(?:门口|门前|家中|家里|住处)/.test(latest);
     var atPickupPoint=currentPickupPoint||(!atHome&&/驿站|代收点|自提柜|快递柜|丰巢/.test(s.station||''));
     var disposition=shipmentDisposition(s),returning=disposition&&['returning','returned'].indexOf(disposition.kind)>=0;
-    var homeDelivery=!returning&&(disposition&&disposition.kind==='doorstep'||s.status==='signed'&&!pickup&&!atPickupPoint&&(!validCode(s.pickupCode)||atHome));
+    var homeDelivery=!returning&&!undatedPickupTransition(events)&&(disposition&&disposition.kind==='doorstep'||s.status==='signed'&&!pickup&&!atPickupPoint&&(!validCode(s.pickupCode)||atHome));
     var linkReason=matchLinkReason(state,s,null,false),station=publicStation(state,s.station);
     var archived=shipmentArchived(state,s),autoReceived=!s.picked&&expiredReceived(state,s),received=!!s.picked||autoReceived,order=byId(state.orders,s.orderId),timing=recordedPickup(s);
-    return {id:s.id,familyId:s.familyId||'',familyName:s.familyName||'',waybillNo:s.waybillNo,carrier:s.carrier,status:returning?disposition.kind:shipmentStatus(state,s),pickupCode:homeDelivery||returning?'':s.pickupCode,station:s.station,stationCorrection:publicCorrection(state,s),arrivalAt:s.arrivalAt||s.smsArrivalAt||0,picked:received,archived:archived,receiptState:autoReceived?'expired_signed':s.picked?'picked':'pending',receiptLabel:autoReceived?'超期自动确认收到':'',hidden:packageHidden(state,s),pickupDisposition:disposition,pickupCycle:clone(s.pickupCycle),pickupCycleHistory:clone(s.pickupCycleHistory||[]),
+    // Cached parcels use the same delivery evidence without waiting for another collection.
+    var doorstep=homeDelivery?logistics.doorstepEvidence(events,{platform:order&&order.platform,carrier:s.carrier}):null;
+    var arrival=doorstep&&doorstep.arrivalAt?doorstep:{arrivalAt:s.arrivalAt||s.smsArrivalAt||0,arrivalAtSource:s.arrivalAt?s.arrivalAtSource||'unknown':'unknown',arrivalAtPrecision:s.arrivalAt?s.arrivalAtPrecision||'unknown':'unknown'};
+    return {id:s.id,familyId:s.familyId||'',familyName:s.familyName||'',waybillNo:s.waybillNo,carrier:s.carrier,status:returning?disposition.kind:shipmentStatus(state,s),pickupCode:homeDelivery||returning?'':s.pickupCode,station:s.station,stationCorrection:publicCorrection(state,s),arrivalAt:arrival.arrivalAt,picked:received,archived:archived,receiptState:autoReceived?'expired_signed':s.picked?'picked':'pending',receiptLabel:autoReceived?'超期自动确认收到':'',hidden:packageHidden(state,s),pickupDisposition:disposition,pickupCycle:clone(s.pickupCycle),pickupCycleHistory:clone(s.pickupCycleHistory||[]),
       stationCanonical:station.stationCanonical,stationCanonicalId:station.stationCanonicalId,stationSubLocation:station.stationSubLocation,stationDisplayName:station.stationDisplayName,pickupCabinet:pickup?pickup.pickupCabinet:station.pickupCabinet,pickupCabinetConflict:pickup?pickup.pickupCabinetConflict:station.pickupCabinetConflict,
       isHomeDelivery:homeDelivery,needsReceiptConfirmation:homeDelivery&&!received&&!archived&&!packageHidden(state,s),pickupCompletion:s.pickupCompletion?clone(s.pickupCompletion):undefined,
       orderDate:order?(dateOnly(order.dateOverride)||order.orderDate||0):0,orderDateSource:order?(order.dateOverride?'manual':order.orderDateSource||'unknown'):'unknown',orderDatePrecision:order?(order.dateOverride?'day':order.orderDatePrecision||'unknown'):'unknown',
       shippedAt:s.shippedAt||0,shippedAtSource:s.shippedAtSource||'unknown',shippedAtPrecision:s.shippedAtPrecision||'unknown',pickedAt:timing.at,pickedAtSource:timing.source,pickedAtPrecision:timing.precision,pickedAtCycleId:s.pickedAtCycleId||'',pickupManualAt:s.pickupManualAt||0,pickupManualAction:s.pickupManualAction||'',pickupManualOperation:s.pickupManualOperation||'',pickupConfirmedAt:s.pickupConfirmedAt,
       canPick:boundShipment(state,s)&&!returning&&!archived,displayPickupCode:pickup?(pickup.conflicts.length?'':pickup.code):'',pickupConflict:!!(pickup&&pickup.conflicts.length),pickupId:pickup?pickup.id:'',needsPickupAssignment:!!(pickup&&pickup.needsPickupAssignment),
-      canLinkPickup:!linkReason,pickupLinkReason:linkReason,arrivalAtSource:s.arrivalAt?s.arrivalAtSource||'unknown':'unknown',arrivalAtPrecision:s.arrivalAt?s.arrivalAtPrecision||'unknown':'unknown',stationSource:s.stationSource||'unknown',
+      canLinkPickup:!linkReason,pickupLinkReason:linkReason,arrivalAtSource:arrival.arrivalAtSource,arrivalAtPrecision:arrival.arrivalAtPrecision,stationSource:s.stationSource||'unknown',
       logisticsEvents:events,logisticsState:s.logisticsState||'',logisticsError:s.logisticsError?'本次物流查询未成功，已保留历史轨迹':'',logisticsCheckedAt:s.logisticsCheckedAt||0,logisticsUpdatedAt:s.logisticsUpdatedAt||0,logisticsTruncated:!!s.logisticsTruncated};
   }
   function publicPackages(state,codes) {
@@ -1403,7 +1413,8 @@ var PickCodeCore = (function () {
       if(input.arrivalAtPrecision!==undefined&&(!preservePickup||timestamp(input.arrivalAt)))s.arrivalAtPrecision=['second','minute','unknown'].indexOf(input.arrivalAtPrecision)>=0?input.arrivalAtPrecision:'unknown';
       if(input.stationSource!==undefined&&(!preservePickup||text(input.station,200))){s.station=text(input.station,200);s.stationSource=['platform_event','locker','unknown'].indexOf(input.stationSource)>=0?input.stationSource:'unknown';}
       var code=normalize(text(input.pickupCode,40));
-      if(s.arrivalAt>0&&validCode(code)&&code!==s.pickupCode){s.pickupCode=code;s.codeUpdatedAt=updated;}
+      var unresolvedStationCode=s.status==='arrived'&&s.stationSource==='platform_event'&&s.station&&undatedPickupTransition(logisticsEvents(input.logisticsEvents))==='arrival';
+      if((s.arrivalAt>0||unresolvedStationCode)&&validCode(code)&&code!==s.pickupCode){s.pickupCode=code;s.codeUpdatedAt=updated;}
       else if(input.arrivalAtSource!==undefined&&input.pickupCode===''&&!preservePickup)s.pickupCode='';
       else s.pickupCode=s.pickupCode||'';
       s.updatedAt=updated;

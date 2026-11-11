@@ -86,9 +86,9 @@ test('minute and unknown time precision survive normalization and Taobao structu
   assert.equal(pickupEvidence(events).arrivalAtPrecision, 'unknown');
 });
 
-test('sorting centers, projected or failed arrivals and doorstep signatures provide no pickup time or station', async () => {
+test('sorting centers, projected or failed arrivals provide no pickup time or station', async () => {
   for (const description of ['已到达杭州转运分拣中心', `预计已送达【${STATION}】`, `未能存入【${STATION}】，入柜失败`,
-    '您的快件已放在家门口，请及时取件', '请快递员存放至幸福小区菜鸟驿站', '催取提醒，请及时取件']) {
+    '请快递员存放至幸福小区菜鸟驿站', '催取提醒，请及时取件']) {
     for (const parcel of [tb([[ARRIVAL, description]]), jd([[ARRIVAL, description]]), await pdd([[ARRIVAL, description]])]) {
       assert.equal(parcel.arrivalAt, 0, description);
       assert.equal(parcel.arrivalAtSource, 'unknown', description);

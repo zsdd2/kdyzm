@@ -83,6 +83,8 @@ export function retainMilestoneEvents(events, rules, now = Date.now(), limit = 1
   const arrival = logistics.pickupEvidence(events.filter(event => !validTime(event.time) || event.time <= now), rules);
   pin(events.find(event => arrival.arrivalAt && event.time === arrival.arrivalAt
     && logistics.pickupArrivalEvent(event.description, arrival.station, rules)));
+  const doorstep = logistics.doorstepEvidence(events, { platform: 'jd' }, now);
+  pin(events.find(event => doorstep.arrivalAt && event.time === doorstep.arrivalAt && /门口|门外/.test(event.description)));
   // Keep the bounded timeline useful while retaining evidence needed for later imports and rule edits.
   for (const event of events) { if (kept.size >= limit || !pin(event)) break; }
   return events.filter(event => kept.has(event));

@@ -105,13 +105,13 @@ function parcelJourney(shipment = {}, order = {}) {
     { key: 'order', label: '下单', at: orderAt, source: orderSource, precision: dayAt ? 'day' : precision(order.orderDatePrecision || shipment.orderDatePrecision) },
     { key: 'ship', label: '发货', at: shipment.shippedAtSource === 'platform_event' ? validAt(shipment.shippedAt) : null, source: shipment.shippedAtSource || 'unknown', precision: precision(shipment.shippedAtPrecision) },
     { key: 'arrival', label: '到货', at: ['platform_event', 'locker_arrival'].includes(shipment.arrivalAtSource) ? validAt(shipment.arrivalAt) : null, source: shipment.arrivalAtSource || 'unknown', precision: precision(shipment.arrivalAtPrecision) },
-    { key: 'pickup', label: picked.source === 'recipient_signed' ? '签收' : '取件', ...picked },
+    { key: 'pickup', label: shipment.isHomeDelivery || picked.source === 'recipient_signed' ? '签收' : '取件', ...picked },
   ];
-  let currentIndex = completed ? 3 : points[2].at || ['arrived', 'awaiting_code'].includes(shipment.status) ? 2
+  let currentIndex = completed ? 3 : points[2].at || shipment.needsReceiptConfirmation || ['arrived', 'awaiting_code'].includes(shipment.status) ? 2
     : points[1].at || shipment.status === 'transit' ? 1 : points[0].at || order.id || shipment.orderId ? 0 : -1;
   if (!completed && ['returning', 'returned'].includes(shipment.status)) currentIndex = -1;
   points.forEach((point, index) => {
-    point.text = point.at ? timeText(point.at, point.precision) : index === 3 && !completed ? '待取件' : '待获取';
+    point.text = point.at ? timeText(point.at, point.precision) : index === 3 && !completed ? shipment.isHomeDelivery ? '待确认' : '待取件' : '待获取';
     point.state = index === currentIndex && !completed ? 'current' : point.at || index < currentIndex || index === 3 && completed ? 'done' : 'pending';
   });
   const segments = parcelJourneySegments({ points, currentIndex, completed });

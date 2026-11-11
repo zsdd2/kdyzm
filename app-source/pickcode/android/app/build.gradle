@@ -7,8 +7,8 @@ android {
         applicationId 'local.pickcode.assistant'
         minSdk 23
         targetSdk 35
-        versionCode 30148
-        versionName '3.1.48'
+        versionCode 30149
+        versionName '3.1.49'
     }
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17

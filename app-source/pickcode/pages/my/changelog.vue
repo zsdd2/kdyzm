@@ -2,6 +2,14 @@
   <view class="changelog-container sf-page">
     <view class="version-list" :class="{ expanded: showOlder }">
       <view class="version-item sf-surface">
+        <view class="version-header"><text class="version-name">v3.1.49 · 私人版</text><text class="version-date">2026-11-11</text></view>
+        <view class="update-list">
+          <view class="update-item"><text class="tag fix">待取</text><text class="content">送到门口的包裹直接显示在待取件列表，支持逐件确认收到</text></view>
+          <view class="update-item"><text class="tag fix">时间</text><text class="content">京东、顺丰门口送达时间作为到货时间，点击确认收到后记录签收时间</text></view>
+          <view class="update-item"><text class="tag optimize">识别</text><text class="content">已合并的旧运单退出异常追踪与重试，保留有效包裹和人工取件决定</text></view>
+        </view>
+      </view>
+      <view class="version-item sf-surface">
         <view class="version-header"><text class="version-name">v3.1.47 · 私人版</text><text class="version-date">2026-11-11</text></view>
         <view class="update-list">
           <view class="update-item"><text class="tag fix">京东</text><text class="content">仓库准备与等待揽收保持待发货，明确揽收才记录发货时间</text></view>
