@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "version": "3.1.51",
+  "version": "3.1.52",
   "upstreamRepository": "https://github.com/SongZX0106/PickCode",
   "upstreamCommit": "07f9fed59122d7f2210a825aadedc2a913a83176",
   "note": "Production source snapshot with authorized downstream modifications; no private data or workflow history.",
@@ -82,7 +82,7 @@
     {
       "path": "android/app/build.gradle",
       "size": 3562,
-      "sha256": "dcfa7fd4e609b114941e2de1a38dded7cd16a10409e1d20b4d26817493b3be5e"
+      "sha256": "d4e05672ea0a5d4d633d645e9a64de0f9da3b7b4e484a129c40ef8cc8d4f3e24"
     },
     {
       "path": "android/app/src/main/AndroidManifest.xml",
@@ -551,8 +551,8 @@
     },
     {
       "path": "core/pickcode-core.js",
-      "size": 180179,
-      "sha256": "b15dcc0dec15d15bab6ef26f5b00b77df48258c4d837d2c4f1c07066c8329f3a"
+      "size": 180249,
+      "sha256": "2073c6b76f896ea6da6606c82c2d143c7f25d366f436087c9bc4cbaffd087813"
     },
     {
       "path": "index.html",
@@ -572,17 +572,17 @@
     {
       "path": "manifest.json",
       "size": 3242,
-      "sha256": "b9e497a6bcf0b3e168154cc74974f18b68bcc6cd75790d23ff2f3623b8334f92"
+      "sha256": "fca917b74aded72ed7d4a5ad0179444e4848b6e0f5d9c5d68d06c0e49164f05a"
     },
     {
       "path": "package-lock.json",
       "size": 256609,
-      "sha256": "bede4cc1ea6b86ef1c4c9887f50db9357d57a03a1d2eaadeff24bd1c16ac0753"
+      "sha256": "8b809b6722088f8b6fcec4792d9ae4676bb5b59e06a3a3de42b76d02876f6e2a"
     },
     {
       "path": "package.json",
       "size": 1728,
-      "sha256": "52bb9fa4accadf8cd4c334c27522944ddd14ab99534bba7aeed4de07272e20bb"
+      "sha256": "6a760c34be739f76eafd1eb7b0622e41a60a5a7de683263ca8ece14651ba51b9"
     },
     {
       "path": "pages.json",
@@ -596,8 +596,8 @@
     },
     {
       "path": "pages/index/index.vue",
-      "size": 79065,
-      "sha256": "9d1eb81659024a4b689a5eb446f67b9a29a415f73e9a0e0db1de9fcafe9d877b"
+      "size": 79637,
+      "sha256": "3c34ce3997d2b1ae2e97fc8b386c6da549cbe45459b098918253394a82e83a69"
     },
     {
       "path": "pages/my/about.vue",
@@ -611,8 +611,8 @@
     },
     {
       "path": "pages/my/changelog.vue",
-      "size": 48807,
-      "sha256": "bb3a15671ac344430ba8d3efea07be84c5bb78cb4aee717cfa6d38ef58808aa5"
+      "size": 49743,
+      "sha256": "b601a09f506e5f6ec58cacc94811b0bbbf45e9a54ff6a3670ed9c639ba730449"
     },
     {
       "path": "pages/my/faq.vue",
@@ -656,8 +656,8 @@
     },
     {
       "path": "pages/packages/index.vue",
-      "size": 78097,
-      "sha256": "82ff24d3de5cac3a4fd92a843fff3a9bbb0b948d2a144063cc838e704fde3d73"
+      "size": 78669,
+      "sha256": "7bfa218ab28b1d92054240d595c2557a3a1969b3d9faff6fd282a3697b7647b3"
     },
     {
       "path": "scripts/ai-context.mjs",
@@ -2619,7 +2619,7 @@
     {
       "path": "README.md",
       "size": 2055,
-      "sha256": "6858c7de0b962adb8f7057e0f88f89ce466ccbc310ab05a8d130542b7bd0148c"
+      "sha256": "8e713491d7a8f8e8001a9aefc0bd01ad303ebe669379bb83357e7622edb8efdf"
     },
     {
       "path": ".gitignore",

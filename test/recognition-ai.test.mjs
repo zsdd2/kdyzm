@@ -133,7 +133,9 @@ test('actual station text formats require exact continuous quotes without normal
   for (const [fragment, alias, subLocation, kind] of samples) {
     const candidate = { fragment, stationName: alias };
     const value = { kind, targetStationId: '', suggestedName: alias, alias, subLocation, evidence: [alias] };
-    assert.equal(validateStationSuggestion(candidate, value, []).alias, alias);
+    const result = validateStationSuggestion(candidate, value, []);
+    assert.equal(result.alias, alias);
+    assert.equal(result.subLocation, kind === 'locker' ? '5号柜' : '');
     assert.throws(() => validateStationSuggestion(candidate, { ...value, subLocation: '4卡2号柜' }, []), { code: 'AI_INVALID_RESULT' });
   }
   assert.match(STATION_SYSTEM, /不去掉片段内部空格/);

@@ -2,6 +2,14 @@
   <view class="changelog-container sf-page">
     <view class="version-list" :class="{ expanded: showOlder }">
       <view class="version-item sf-surface">
+        <view class="version-header"><text class="version-name">v3.1.52 · 私人版</text><text class="version-date">2026-11-12</text></view>
+        <view class="update-list">
+          <view class="update-item"><text class="tag fix">站点</text><text class="content">门店卡位不再混入子位置，柜号单独保留，兼容旧建议并维持位置冲突保护</text></view>
+          <view class="update-item"><text class="tag fix">确认</text><text class="content">逐件确认收到互不阻塞，详情关闭后恢复操作，等待回复时明确显示确认中</text></view>
+          <view class="update-item"><text class="tag optimize">重试</text><text class="content">相同时间异常保留重试进度，AI优先核对真正缺失或冲突的时间证据</text></view>
+        </view>
+      </view>
+      <view class="version-item sf-surface">
         <view class="version-header"><text class="version-name">v3.1.51 · 私人版</text><text class="version-date">2026-11-11</text></view>
         <view class="update-list">
           <view class="update-item"><text class="tag fix">电话</text><text class="content">修复圆通姓名后接手机号、顺丰交给联系人等派送文案的号码遗漏</text></view>

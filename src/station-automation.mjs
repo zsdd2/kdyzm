@@ -1,4 +1,5 @@
 import { stationKey } from './station-text.mjs';
+import { stationSubLocation } from '../public/station-location.js';
 
 const placeParts = value => {
   const parts = new Map();
@@ -17,6 +18,8 @@ const distinctive = value => {
   const key = stationKey(value);
   return key.length >= 6 && key.replace(/菜鸟|兔喜|丰巢|快递|生活|驿站|自提|服务|代收|号柜|站|店|柜|点|\d/gu, '').length >= 4;
 };
+
+export const stationLocationConflict = (...values) => [...placeParts(values.join('，')).values()].some(parts => parts.size > 1);
 
 // AI selects a target; this independent check only accepts a unique literal identity.
 // Similar names, new stations and guesses remain reviewable suggestions.
@@ -45,8 +48,9 @@ export function stationAutomationDecision(candidate, stations) {
   for (const [kind, values] of [...required, ...extra]) {
     if (!parts.has(kind) || [...values].some(number => !parts.get(kind).has(number))) return { reason: '别名未完整保留位置编号' };
   }
-  if (candidate.feedback?.subLocation && stationKey(candidate.feedback.subLocation) !== stationKey(suggestion.subLocation)) return { reason: '人工样本的柜号未完整保留' };
+  if (candidate.feedback?.subLocation && stationKey(stationSubLocation(candidate.feedback.subLocation)) !== stationKey(stationSubLocation(suggestion.subLocation))) return { reason: '人工样本的柜号未完整保留' };
   const existing = target.aliases.find(alias => stationKey(alias.name) === aliasKey);
-  if (existing && existing.subLocation !== suggestion.subLocation) return { reason: '已有别名的位置说明不同' };
+  if (existing && (stationLocationConflict(target.name, existing.name, existing.subLocation, suggestion.subLocation)
+    || stationSubLocation(existing.subLocation || '') !== stationSubLocation(suggestion.subLocation || ''))) return { reason: '已有别名的位置说明不同' };
   return { target, existing, alreadyKnown: aliasKey === stationKey(target.name) || !!existing, reason: '' };
 }

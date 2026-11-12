@@ -157,7 +157,8 @@ var PickCodeCore = (function () {
       if(matching.length){var alias=matching[0],extra=stationLocation(alias.subLocation);found.push({id:rule.id,name:rule.name,region:rule.region,subLocation:alias.subLocation||'',ruleSubLocation:alias.subLocation||'',location:{cabinet:location.cabinet||extra.cabinet,gate:location.gate||extra.gate,card:location.card||extra.card,building:location.building||extra.building}});}
     });
     var result=found.length===1?found[0]:{id:'',name:'',region:'',subLocation:'',location:location};
-    result.key=key;result.ambiguous=found.length>1;result.subLocation=result.subLocation||[location.gate,location.card?location.card+'卡':'',location.building?location.building+'栋':'',location.cabinet?location.cabinet+'号柜':''].filter(Boolean).join(' ');
+    result.key=key;result.ambiguous=found.length>1;
+    result.subLocation=result.subLocation.replace(/[0-9０-９零〇一二两三四五六七八九十]+\s*卡/g,'').replace(/\s+/g,' ').trim()||[location.gate,location.building?location.building+'栋':'',location.cabinet?location.cabinet+'号柜':''].filter(Boolean).join(' ');
     stationRecognitionCache[cacheKey]=result;return result;
   }
   function stationMatch(state,a,b) {

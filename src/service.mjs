@@ -30,6 +30,7 @@ const PUBLIC = new URL('../public/', import.meta.url);
 const STATIC = new Map([['/', ['index.html', 'text/html; charset=utf-8']], ['/admin.js', ['admin.js', 'text/javascript; charset=utf-8']], ['/station-admin.js', ['station-admin.js', 'text/javascript; charset=utf-8']], ['/station-admin.css', ['station-admin.css', 'text/css; charset=utf-8']], ['/sync-status.js', ['sync-status.js', 'text/javascript; charset=utf-8']], ['/admin.css', ['admin.css', 'text/css; charset=utf-8']]]);
 STATIC.set('/logistics-admin.js', ['logistics-admin.js', 'text/javascript; charset=utf-8']);
 STATIC.set('/pickup-completion-admin.js', ['pickup-completion-admin.js', 'text/javascript; charset=utf-8']);
+STATIC.set('/station-location.js', ['station-location.js', 'text/javascript; charset=utf-8']);
 
 async function bodyOf(req) {
   if (!(req.headers['content-type'] || '').startsWith('application/json')) fail(415, 'JSON_REQUIRED', '请使用 application/json');

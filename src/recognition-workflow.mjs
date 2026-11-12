@@ -77,9 +77,11 @@ export class RecognitionWorkflow {
     if (!account.enabled || account.status === 'expired') return { shipment, order, account, blocked: true, reasonCode: account.enabled ? 'ACCOUNT_EXPIRED' : 'ACCOUNT_DISABLED' };
     return { shipment, order, account };
   }
-  fingerprint(shipment) {
-    const events = (shipment.logisticsEvents || []).map(event => [event.time, event.timeText, event.timePrecision, event.description, event.location,
+  fingerprint(shipment, target) {
+    const events = (shipment.logisticsEvents || []).filter(event => target !== 'event_time' || logisticsEventTimeIssue(event, this.now()))
+      .map(event => [event.time, event.timeText, event.timePrecision, event.description, event.location,
       event.provider, event.providerStatus, event.providerStatusTag, event.providerSubStatus, event.providerStatusText]);
+    if (target === 'event_time') return hash(JSON.stringify([[...new Set(events.map(event => JSON.stringify(event)))].sort(), shipment.pickupCycle?.id]));
     return hash(JSON.stringify([events, shipment.status, shipment.logisticsState, shipment.arrivalAt, shipment.arrivalAtSource, shipment.arrivalAtPrecision, shipment.station, shipment.pickupCycle?.id]));
   }
   reportFingerprint(source, shipments) {
@@ -132,17 +134,22 @@ export class RecognitionWorkflow {
   upsert(scope, problem, extras = {}) {
     const { shipment, account } = scope;
     const id = `recognition-${hash(JSON.stringify([shipment.id, problem.target, extras.deviceId || '', extras.sourceId || ''])).slice(0, 32)}`;
-    const previous = this.task(id), fingerprint = extras.sourceFingerprint || this.fingerprint(shipment);
+    const previous = this.task(id);
+    const timeEvidenceFingerprint = problem.target === 'event_time' ? this.fingerprint(shipment, 'event_time') : '';
+    // Keep the existing AI review identity when only unrelated, valid logistics changed.
+    const fingerprint = extras.sourceFingerprint || (timeEvidenceFingerprint && previous?.timeEvidenceFingerprint === timeEvidenceFingerprint
+      ? previous.sourceFingerprint : this.fingerprint(shipment));
+    const evidence = timeEvidenceFingerprint ? { timeEvidenceFingerprint } : {};
     if (previous) {
       if (TERMINAL.has(previous.status) && previous.sourceFingerprint === fingerprint) return previous;
       const restart = previous.sourceFingerprint !== fingerprint && ['review', 'ai_pending', 'ai_running'].includes(previous.status);
-      if (!TERMINAL.has(previous.status) && !restart) return this.reevaluate(this.save({ ...previous, sourceFingerprint: fingerprint, problemCode: problem.reasonCode }));
+      if (!TERMINAL.has(previous.status) && !restart) return this.reevaluate(this.save({ ...previous, ...evidence, sourceFingerprint: fingerprint, problemCode: problem.reasonCode }));
     }
     if (!previous && this.db.prepare("SELECT COUNT(*) AS count FROM recognition_tasks WHERE json_extract(data,'$.status') NOT IN ('resolved','ignored')").get().count >= ACTIVE_LIMIT) return null;
     return this.store.transaction(() => {
       this.db.prepare('DELETE FROM recognition_attempts WHERE task_id=?').run(id);
       return this.save({ id, ...recognitionMethod(account.platform, problem.target), accountId: account.id, orderId: shipment.orderId, shipmentId: shipment.id,
-        sourceFingerprint: fingerprint, evidenceVersion: (previous?.evidenceVersion || 0) + 1, initialFailures: 1, retryCount: 0, aiAttempts: 0, status: scope.blocked ? 'blocked' : 'pending',
+        sourceFingerprint: fingerprint, ...evidence, evidenceVersion: (previous?.evidenceVersion || 0) + 1, initialFailures: 1, retryCount: 0, aiAttempts: 0, status: scope.blocked ? 'blocked' : 'pending',
         reasonCode: scope.blocked ? scope.reasonCode : problem.reasonCode, problemCode: problem.reasonCode, nextRetryAt: this.now() + 5 * MINUTE,
         createdAt: this.now(), lastJobId: '', lastJobIds: [], pendingJobs: [], candidateIds: [], ...extras });
     });

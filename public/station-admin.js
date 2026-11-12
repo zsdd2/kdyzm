@@ -1,3 +1,5 @@
+import { stationSubLocation } from './station-location.js';
+
 const get = id => document.getElementById(id);
 
 const text = value => value === null || value === undefined ? '' : String(value);
@@ -46,7 +48,7 @@ export function candidateOf(value) {
     suggestedStationId: first(value?.stationId, value?.suggestedStationId, suggestion?.targetStationId, suggested.id, value?.feedback?.targetStationId),
     suggestedName: first(value?.suggestedStationName, value?.target, value?.targetName, suggestion?.suggestedName, suggested.name),
     alias: first(value?.alias, suggestion?.alias),
-    subLocation: first(value?.subLocation, value?.sub, value?.locker, value?.lockerNo, suggestion?.subLocation, value?.feedback?.subLocation),
+    subLocation: stationSubLocation(first(value?.subLocation, value?.sub, value?.locker, value?.lockerNo, suggestion?.subLocation, value?.feedback?.subLocation)),
     evidence: Array.isArray(value?.evidence) ? value.evidence.join('；') : Array.isArray(suggestion?.evidence) ? suggestion.evidence.join('；') : first(value?.evidence, suggestion?.evidence, value?.reason, value?.basis, '请核对原文与地区信息。'),
     occurrenceCount: Number(first(value?.occurrenceCount, value?.occurrences, value?.count, value?.times, 1)) || 1,
     raw: value,

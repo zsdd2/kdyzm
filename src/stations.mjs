@@ -2,7 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { encryptCookie, decryptCookie, fail, hash, onlyKeys } from './security.mjs';
 import { stationText, stationKey, redactStationFragment, nonPickupPlace, validateStationSuggestion } from './station-text.mjs';
 import { validateAiBaseUrl } from './station-ai.mjs';
-import { stationAutomationDecision } from './station-automation.mjs';
+import { stationAutomationDecision, stationLocationConflict } from './station-automation.mjs';
+import { stationSubLocation } from '../public/station-location.js';
 import { AI_INTERVAL_MINUTES, AI_EVENT_COOLDOWN, aiDailyLimit } from './ai-policy.mjs';
 
 const parse = row => row && JSON.parse(row.data);
@@ -152,16 +153,18 @@ export class StationStore {
     onlyKeys(body, ['stationId', 'alias', 'subLocation', 'name', 'region']);
     const candidate = this.candidate(id);
     if (!['pending', 'review', 'unknown', 'failed'].includes(candidate.status) || ['home', 'hub'].includes(candidate.suggestion?.kind)) fail(409, 'CANDIDATE_CLOSED', '该片段不能再次确认');
-    const alias = stationText(body.alias ?? candidate.suggestion?.alias ?? candidate.stationName, '别名'), subLocation = stationText(body.subLocation ?? candidate.suggestion?.subLocation ?? '', '柜号', 60, false);
-    if ([candidate.fragment, candidate.stationName, alias, subLocation].some(nonPickupPlace)) fail(400, 'INVALID_STATION', '中转、分拣、发货仓及住宅不是末端取件站点');
-    if (!candidate.fragment.includes(alias) || subLocation && !candidate.fragment.includes(subLocation)) fail(400, 'INVALID_ALIAS', '确认的别名与柜号须来自片段');
+    const alias = stationText(body.alias ?? candidate.suggestion?.alias ?? candidate.stationName, '别名'), rawSubLocation = stationText(body.subLocation ?? candidate.suggestion?.subLocation ?? '', '柜号', 60, false);
+    const subLocation = stationSubLocation(rawSubLocation);
+    if ([candidate.fragment, candidate.stationName, alias, rawSubLocation].some(nonPickupPlace)) fail(400, 'INVALID_STATION', '中转、分拣、发货仓及住宅不是末端取件站点');
+    if (!candidate.fragment.includes(alias) || [rawSubLocation, subLocation].some(value => value && !candidate.fragment.includes(value))) fail(400, 'INVALID_ALIAS', '确认的别名与柜号须来自片段');
     const stationId = body.stationId ?? candidate.suggestion?.targetStationId;
     let station = stationId ? this.station(stationId) : undefined;
     if (stationId && !station) fail(400, 'INVALID_STATION', '请选择有效站点');
     if (station && !station.enabled) fail(400, 'INVALID_STATION', '请先启用目标站点');
     const aliases = station?.aliases || [];
     const existing = aliases.find(a => stationKey(a.name) === stationKey(alias));
-    if (existing && existing.subLocation !== subLocation) fail(409, 'ALIAS_EXISTS', '同名别名已有不同柜号，请在站点详情编辑');
+    if (existing && (stationLocationConflict(station.name, existing.name, existing.subLocation, rawSubLocation)
+      || stationSubLocation(existing.subLocation || '') !== subLocation)) fail(409, 'ALIAS_EXISTS', '同名别名已有不同柜号，请在站点详情编辑');
     return this.transaction(() => {
       station = this.saveStation(station?.id, { name: station?.name || body.name || candidate.suggestion?.suggestedName || candidate.stationName, region: station?.region || body.region || candidate.region,
         enabled: true, aliases: existing ? aliases : [...aliases, { name: alias, subLocation, source: candidate.suggestion ? 'ai' : 'manual' }] });

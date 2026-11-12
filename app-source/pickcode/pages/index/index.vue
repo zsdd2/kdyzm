@@ -57,7 +57,7 @@
               <text class="pickup-platform">{{ platformName(entry.order.platform) }}<template v-if="entry.shipment.carrier"> · {{ entry.shipment.carrier }}</template></text>
             </view>
             <button class="receipt-copy" role="button" tabindex="0" data-notification-control :data-receipt-details="entry.shipment.id" aria-haspopup="dialog" :aria-label="'查看 ' + (entry.order.title || '包裹') + ' 包裹' + (index + 1) + '详情'" @click.stop="openReceiptDetails(entry)"><text class="receipt-title">{{ entry.order.title || '包裹' }}</text><text class="receipt-status">已送达·待确认</text></button>
-            <button class="picked-btn receipt-confirm" role="button" :tabindex="canConfirmReceipt(entry) ? 0 : -1" data-notification-control :data-receipt-confirm="entry.shipment.id" :aria-label="'确认收到 ' + (entry.order.title || '包裹') + ' 包裹' + (index + 1)" :disabled="!canConfirmReceipt(entry)" :aria-busy="confirmingReceiptId === entry.shipment.id" @click.stop="confirmReceipt(entry)">确认收到</button>
+            <button class="picked-btn receipt-confirm" role="button" :tabindex="canConfirmReceipt(entry) ? 0 : -1" data-notification-control :data-receipt-confirm="entry.shipment.id" :aria-label="'确认收到 ' + (entry.order.title || '包裹') + ' 包裹' + (index + 1)" :disabled="!canConfirmReceipt(entry)" :aria-busy="!!confirmingReceiptIds[entry.shipment.id]" @click.stop="confirmReceipt(entry)">{{ confirmingReceiptIds[entry.shipment.id] ? '确认中' : '确认收到' }}</button>
             <view class="pickup-journeys"><ParcelJourney :journey="entry.journey" /></view>
           </view>
         </view>
@@ -241,7 +241,7 @@
               <text class="notification-body">{{ notice.body }}</text>
               <template v-if="notice.receipt">
                 <text class="notification-detail">{{ receiptLogistics(notice.receipt.shipment) }}</text>
-                <button class="notification-action" role="button" :tabindex="canConfirmReceipt(notice.receipt) ? 0 : -1" data-notification-control :disabled="!canConfirmReceipt(notice.receipt)" :aria-busy="confirmingReceiptId === notice.receipt.shipment.id" @click="confirmReceipt(notice.receipt)">确认收到</button>
+                <button class="notification-action" role="button" :tabindex="canConfirmReceipt(notice.receipt) ? 0 : -1" data-notification-control :disabled="!canConfirmReceipt(notice.receipt)" :aria-busy="!!confirmingReceiptIds[notice.receipt.shipment.id]" @click="confirmReceipt(notice.receipt)">{{ confirmingReceiptIds[notice.receipt.shipment.id] ? '确认中' : '确认收到' }}</button>
               </template>
               <template v-else-if="notice.reminder">
                 <button class="notification-action" role="button" tabindex="0" data-notification-control :aria-expanded="expandedReminderId === notice.reminder.sourceId" @click="expandedReminderId = expandedReminderId === notice.reminder.sourceId ? '' : notice.reminder.sourceId">{{ expandedReminderId === notice.reminder.sourceId ? '收起短信' : '查看短信' }}</button>
@@ -252,7 +252,7 @@
             <button class="notification-dismiss" role="button" tabindex="0" data-notification-control :aria-label="'关闭通知：' + notice.title + '，' + notice.body" @click="dismissNotification(notice)"><uni-icons type="closeempty" size="16" color="#8493a8" /></button>
           </view>
         </view>
-        <view v-if="receiptDetail" class="notification-footer receipt-detail-footer"><button role="button" tabindex="0" data-notification-control @click="closeNotifications()">关闭</button><button class="receipt-detail-confirm" role="button" :tabindex="canConfirmReceipt(receiptDetail) ? 0 : -1" data-notification-control :disabled="!canConfirmReceipt(receiptDetail)" :aria-busy="confirmingReceiptId === receiptDetail.shipment.id" @click.stop="confirmReceipt(receiptDetail)">确认收到</button></view>
+        <view v-if="receiptDetail" class="notification-footer receipt-detail-footer"><button role="button" tabindex="0" data-notification-control @click="closeNotifications()">关闭</button><button class="receipt-detail-confirm" role="button" :tabindex="canConfirmReceipt(receiptDetail) ? 0 : -1" data-notification-control :disabled="!canConfirmReceipt(receiptDetail)" :aria-busy="!!confirmingReceiptIds[receiptDetail.shipment.id]" @click.stop="confirmReceipt(receiptDetail)">{{ confirmingReceiptIds[receiptDetail.shipment.id] ? '确认中' : '确认收到' }}</button></view>
         <view v-else class="notification-footer"><text>事项有新进展时会再次提醒</text><button role="button" tabindex="0" data-notification-control @click="closeNotifications()">收起</button></view>
       </view>
     </uni-popup>
@@ -293,7 +293,7 @@ export default {
   components: { ParcelJourney, PickupDetail, StationChooser, PickupShare, OrderOverview },
   data() {
     return { sourceOpen: false, expandedTitles: {}, newCode: '', addingCode: false, packageCodes: [], snapshot: emptySnapshot(), dateShowActions: {}, expandedDates: {}, expandedStations: {}, pickupGrouping: 'station', sourceItem: null, detailRevision: 0, matchingOnOpen: false, journeyCompletions: {}, yizhanIcon,
-      hydrated: false, backgroundSyncing: false, scanning: false, syncing: false, confirmingReceiptId: '', refreshProgressText: '更新中', syncMessage: '', syncErrors: { sms: '', online: '' }, pendingPickupId: '', ignoring: null, ignoreReason: '', savingIgnore: false, loadError: '',
+      hydrated: false, backgroundSyncing: false, scanning: false, syncing: false, confirmingReceiptIds: {}, refreshProgressText: '更新中', syncMessage: '', syncErrors: { sms: '', online: '' }, pendingPickupId: '', ignoring: null, ignoreReason: '', savingIgnore: false, loadError: '',
       notificationsOpen: false, receiptDetailTarget: null, stationChooserOpen: false, shareOpen: false, shareIcon, notificationCategory: 'all', expandedReminderId: '', reviewNoticeIcon, notificationDismissals: readNotificationDismissals(),
       reducedMotion: typeof window !== 'undefined' && !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches };
   },
@@ -465,7 +465,12 @@ export default {
       this.$refs.notificationsPopup?.close?.();
       this.releaseNotificationBackground();
       // Only consume the same-URL history entry that this sheet created.
-      if (this.clearNotificationHistoryMarker()) await new Promise(resolve => { this._notificationBackResolve = resolve; window.history.back(); });
+      if (this.clearNotificationHistoryMarker()) await new Promise(resolve => {
+        // A paused WebView may omit popstate; closing a sheet must still release its controls.
+        const finish = () => { clearTimeout(timer); if (this._notificationBackResolve === finish) this._notificationBackResolve = null; resolve(); };
+        const timer = setTimeout(finish, 350);
+        this._notificationBackResolve = finish; window.history.back();
+      });
       this._notificationHistory = null;
       if (typeof window !== 'undefined') await new Promise(resolve => setTimeout(resolve, 310));
       this._notificationClosing = false;
@@ -567,14 +572,14 @@ export default {
       this.receiptDetailTarget = { orderId: entry.order.id, shipmentId: entry.shipment.id };
       this._receiptDetailTriggerId = entry.shipment.id;
     },
-    canConfirmReceipt(entry) { return !this.syncing && !this.scanning && !this.confirmingReceiptId && !!entry.shipment.id && entry.shipment.canPick !== false; },
+    canConfirmReceipt(entry) { return !this.syncing && !this.scanning && !this.confirmingReceiptIds[entry.shipment.id] && !!entry.shipment.id && entry.shipment.canPick !== false; },
     async confirmReceipt(entry) {
       const current = this.receiptDeliveries.find(item => item.order.id === entry.order.id && item.shipment.id === entry.shipment.id);
       if (!current || !this.canConfirmReceipt(current)) return;
-      this.confirmingReceiptId = current.shipment.id;
+      this.confirmingReceiptIds[current.shipment.id] = true;
       try { this.applySnapshot(await mutate('pickShipments', { orderId: current.order.id, shipmentIds: [current.shipment.id], picked: true })); }
       catch(error) { this.showError(error); }
-      finally { this.confirmingReceiptId = ''; }
+      finally { delete this.confirmingReceiptIds[current.shipment.id]; }
     },
     async addCode() {
       if (this.addingCode) return;

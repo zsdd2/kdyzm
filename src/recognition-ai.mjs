@@ -1,6 +1,7 @@
 import { hash } from './security.mjs';
 import { contentJson, safeFailure, aiError } from './station-ai.mjs';
 import { redactStationFragment, stationText, stationKey } from './station-text.mjs';
+import { logisticsEventTimeIssue } from './collector-enrichment.mjs';
 
 const TARGETS = ['arrival_time', 'event_time', 'station_match', 'logistics_detail'];
 const ACTIONS = ['review_time_format', 'review_match', 'request_platform_detail', 'manual_check'];
@@ -101,8 +102,11 @@ export class RecognitionAi {
         input.evidence.push({ sourceId: stationEvidenceId, text: station });
       }
     } else {
-      for (const [index, event] of (sources[0].shipment.logisticsEvents || []).slice(0, 12).entries()) {
-        const raw = timeText(event.timeText);
+      const events = sources[0].shipment.logisticsEvents || [];
+      const times = task.target === 'event_time'
+        ? [...new Set(events.filter(event => logisticsEventTimeIssue(event, this.now())).map(event => timeText(event.timeText)).filter(Boolean))].sort().slice(0, 12)
+        : events.slice(0, 12).map(event => timeText(event.timeText));
+      for (const [index, raw] of times.entries()) {
         if (raw) input.evidence.push({ sourceId: `event-${index + 1}-time`, text: raw });
       }
     }

@@ -1,4 +1,5 @@
 import { fail } from './security.mjs';
+import { stationSubLocation } from '../public/station-location.js';
 
 // Keep this recognition boundary aligned with core locationNumbers/matchStationKey.
 export function stationKey(value) {
@@ -48,5 +49,7 @@ export function validateStationSuggestion(candidate, value, stations) {
   if (suggestedName && (!candidate.fragment.includes(suggestedName) || nonPickupPlace(suggestedName) || redactStationFragment(suggestedName) !== suggestedName)) fail(400, 'AI_INVALID_RESULT', 'AI新站点名称必须来自脱敏原文');
   if (['pickup_station', 'locker'].includes(value.kind) && (!alias || !evidence.length || (!targetStationId && !suggestedName)
     || [candidate.fragment, candidate.stationName, alias, subLocation].some(nonPickupPlace))) fail(400, 'AI_INVALID_RESULT', 'AI结果缺少可核对的末端取件站点信息');
-  return { kind: value.kind, targetStationId, suggestedName, alias, subLocation, evidence };
+  const detail = stationSubLocation(subLocation);
+  if (detail && !candidate.fragment.includes(detail)) fail(400, 'AI_INVALID_RESULT', 'AI子位置必须是原文中的连续片段');
+  return { kind: value.kind, targetStationId, suggestedName, alias, subLocation: detail, evidence };
 }
