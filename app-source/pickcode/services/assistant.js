@@ -4,7 +4,7 @@ import packageInfo from '../package.json' with { type: 'json' };
 
 const core = globalThis.PickCodeCore;
 const storageKey = 'pickcode.private.state.v1';
-const ONLINE_IMPORT_VERSION = 327;
+const ONLINE_IMPORT_VERSION = 328;
 let initialization;
 let initialized = false;
 let snapshotInFlight;
@@ -34,7 +34,10 @@ let previewFeedbackUpload;
 let previewRecognitionUpload;
 let previewQueue = Promise.resolve();
 function localDispatch(action, payload = {}) {
-  const { state, result } = JSON.parse(core.dispatch(uni.getStorageSync(storageKey) || '', JSON.stringify({ action, payload })));
+  const previous = uni.getStorageSync(storageKey) || '';
+  const backupKey = 'pickcode.private.backup.pre-3.2.0';
+  if (previous && !uni.getStorageSync(backupKey)) uni.setStorageSync(backupKey, previous);
+  const { state, result } = JSON.parse(core.dispatch(previous, JSON.stringify({ action, payload })));
   if (action !== 'snapshot') uni.setStorageSync(storageKey, JSON.stringify(state));
   return result;
 }
@@ -51,7 +54,7 @@ async function previewFetch(path, options = {}, authenticated = true, session = 
     const response = await fetch(session.baseUrl + path, { ...options, redirect: 'error', signal: controller.signal, headers: { 'Content-Type': 'application/json', ...(authenticated ? { Authorization: `Bearer ${session.token}` } : {}), ...options.headers } });
     if (response.status === 304) return { unchanged: true };
     const body = await response.text();
-    if (body.length > 2 * 1024 * 1024) throw new Error('线上响应过大，已保留本地记录');
+    if (new TextEncoder().encode(body).byteLength > 4000000) throw new Error('线上响应过大，已保留本地记录');
     const data = JSON.parse(body);
     if (!response.ok) { const error = new Error(data.error?.message || '线上服务暂不可用'); error.status = response.status; error.code = response.status === 401 ? 'device_unauthorized' : data.error?.code; throw error; }
     return { data, etag: response.headers.get('ETag') };
@@ -250,18 +253,33 @@ async function previewOnline(action, payload) {
     previewSession = undefined;
     return localDispatch('syncMeta', { bound: false, baseUrl: '', deviceId: '', accounts: [], error: message, errorCode: message ? 'revoke_pending' : '' });
   }
+  if (action === 'shipmentDetails') {
+    const session = previewSession, target = localDispatch('shipmentDetailTarget', { id: payload.id });
+    if (!session?.token) throw new Error('请先连接后台，已有物流缓存已保留');
+    const { data } = await previewFetch('/v1/shipments/' + encodeURIComponent(target.remoteId) + '/logistics', {}, true, session);
+    if (previewSession !== session) throw new Error('后台绑定已变更，请重新打开详情');
+    return localDispatch('importShipmentDetails', { ...data, id: target.id, bindingKey: target.bindingKey });
+  }
   if (previewSync) return previewSync;
   previewSync = (async () => {
     if (!previewSession?.token) throw new Error('请先绑定线上服务');
     try {
       const readSnapshot = async () => {
         const cachedOnline = localDispatch('snapshot').online;
-        const result = await previewFetch('/v1/snapshot', { headers: previewSession.etag && !payload.force && action !== 'refreshOrder' && cachedOnline.importVersion >= ONLINE_IMPORT_VERSION && !cachedOnline.needsPickupSync ? { 'If-None-Match': previewSession.etag } : {} });
+        const reusable = cachedOnline.importVersion >= ONLINE_IMPORT_VERSION && !cachedOnline.needsPickupSync;
+        const dataVersion = reusable ? cachedOnline.dataVersion || '' : '';
+        const result = await previewFetch('/v1/snapshot?view=compact' + (dataVersion ? '&dataVersion=' + encodeURIComponent(dataVersion) : ''), { headers: previewSession.etag && !payload.force && action !== 'refreshOrder' && reusable ? { 'If-None-Match': previewSession.etag } : {} });
         if (!result.unchanged) {
-          if (result.data.serverRevision < localDispatch('snapshot').online.serverRevision) throw new Error('后台返回旧版本数据，已保留本地记录，请稍后重试');
-          localDispatch('syncImport', { snapshot: result.data, syncedAt: Date.now(), importVersion: ONLINE_IMPORT_VERSION });
+          const current = localDispatch('snapshot').online;
+          if (result.data.serverRevision < Math.max(current.serverRevision, current.metadataRevision || 0)) throw new Error('后台返回旧版本数据，已保留本地记录，请稍后重试');
+          if (result.data.metadataOnly) {
+            if (!dataVersion || result.data.dataVersion !== dataVersion) throw new Error('同步数据版本不匹配，请重新同步');
+            localDispatch('syncMetadata', { meta: result.data, dataVersion, syncedAt: Date.now() });
+          } else {
+            localDispatch('syncImport', { snapshot: result.data, syncedAt: Date.now(), importVersion: ONLINE_IMPORT_VERSION });
+            previewSession.jobOrders = new Set((result.data.orders || []).map(order => order.id));
+          }
           previewSession.jobAccounts = new Set((result.data.accounts || []).map(account => account.id));
-          previewSession.jobOrders = new Set((result.data.orders || []).map(order => order.id));
           previewSession.snapshotJobIds = new Set((result.data.syncJobs || []).map(job => job.id));
           previewSession.etag = result.etag;
         }
@@ -293,8 +311,10 @@ async function previewOnline(action, payload) {
         needsSnapshot = !conditional || data.jobs.length > 0;
       }
       if (!needsSnapshot) {
+        let detailRequests = 0;
         const jobs = await Promise.all((online.jobs || []).filter(jobAllowed).map(async job => {
           if (!['queued','running'].includes(job.state) || previewSession.snapshotJobIds?.has(job.id)) return job;
+          if (detailRequests++ >= 3) return job;
           needsSnapshot = true;
           try {
             const { data } = await previewFetch('/v1/sync-jobs/' + encodeURIComponent(job.id));
@@ -423,6 +443,7 @@ function requestTransport(action, payload = {}) {
   if (action === 'onlineStatus') return previewOnline(action, payload);
   if (action === 'overview') return Promise.resolve(overviewOf(localDispatch('snapshot')));
   if (action === 'aiChannels') return previewOnline(action, payload);
+  if (action === 'shipmentDetails') return previewOnline(action, payload);
   if (action === 'aiOptimizationStatus') return Promise.resolve({ enabled: false, channelId: '', pending: [], supported: false });
   if (['bindOnline','syncOnline','unbindOnline','refreshOrder','stationProposal'].includes(action)) {
     previewQueue = previewQueue.catch(() => {}).then(() => previewOnline(action, payload));
@@ -558,6 +579,32 @@ export function refreshOnline(onProgress) {
     return waitForOnline(await syncOnline(true), onProgress);
   })().finally(() => { onlineRefreshInFlight = undefined; });
   return onlineRefreshInFlight;
+}
+let smsRefreshInFlight;
+export function scanAndMatch() {
+  if (smsRefreshInFlight) return smsRefreshInFlight;
+  smsRefreshInFlight = (async () => {
+    await ready();
+    let smsError = '';
+    try {
+      let status = await getRuntimeStatus();
+      if (!status.native) throw new Error('短信匹配请使用 Android 安装版');
+      if (!status.smsPermission) { await requestSmsPermission(); status = await getRuntimeStatus(); }
+      if (!status.smsPermission) throw new Error('尚未获得短信权限');
+      await scanSms();
+    } catch (error) { smsError = error.message || '短信扫描失败，已有记录已保留'; }
+    return { snapshot: changed(await request('refreshStations')), smsError };
+  })().finally(() => { smsRefreshInFlight = undefined; });
+  return smsRefreshInFlight;
+}
+const detailRequests = new Map();
+export function loadShipmentDetails(id) {
+  const key = bindingEpoch + ':' + id;
+  if (detailRequests.has(key)) return detailRequests.get(key);
+  const operation = ready().then(() => request('shipmentDetails', { id })).then(changed)
+    .finally(() => { if (detailRequests.get(key) === operation) detailRequests.delete(key); });
+  detailRequests.set(key, operation);
+  return operation;
 }
 export function refreshAll(onProgress) {
   if (refreshInFlight) return refreshInFlight;

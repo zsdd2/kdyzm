@@ -5,15 +5,25 @@ import android.content.Context;
 import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
 import android.database.sqlite.SQLiteOpenHelper;
+import android.content.SharedPreferences;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 
 /** One transaction owns read -> core mutation -> write; UI/worker/widget never replace snapshots. */
 public final class AssistantStore extends SQLiteOpenHelper {
     private static AssistantStore instance;
+    private static final String UPGRADE_BACKUP_PREFS = "assistant_upgrade_backup";
+    private static final String UPGRADE_BACKUP_MARKER = "assistant_state_before_3.2.0_written";
+    private static final String UPGRADE_BACKUP_DIR = "upgrade-backups";
+    private static final String UPGRADE_BACKUP_NAME = "assistant-state-before-3.2.0.json";
+    private final Context appContext;
     private final CoreEngine engine;
     private volatile String snapshotCache;
     private volatile long snapshotCachedAt;
@@ -31,8 +41,9 @@ public final class AssistantStore extends SQLiteOpenHelper {
 
     private AssistantStore(Context context) {
         super(context, "assistant.db", null, 2);
+        appContext = context.getApplicationContext();
         setWriteAheadLoggingEnabled(true);
-        try (InputStream stream = context.getAssets().open("pickcode-core.js")) {
+        try (InputStream stream = appContext.getAssets().open("pickcode-core.js")) {
             ByteArrayOutputStream bytes = new ByteArrayOutputStream();
             byte[] buffer = new byte[8192];
             int count;
@@ -132,6 +143,7 @@ public final class AssistantStore extends SQLiteOpenHelper {
             try (Cursor row = db.rawQuery("SELECT payload FROM assistant_state WHERE id=1", null)) {
                 if (row.moveToFirst()) state = row.getString(0);
             }
+            backupBeforeUpgrade(state);
             JSONObject request = new JSONObject().put("action", action).put("payload", payload);
             JSONObject output = new JSONObject(engine.dispatch(state, request.toString()));
             if (sourceMessage != null) {
@@ -166,6 +178,70 @@ public final class AssistantStore extends SQLiteOpenHelper {
             snapshotCachedAt = android.os.SystemClock.elapsedRealtime();
         }
         return result;
+    }
+
+    /**
+     * Preserve the pre-upgrade state once, before any command can ask the core to mutate it.
+     * The temporary file lives beside the destination so rename is atomic on the same volume.
+     */
+    private void backupBeforeUpgrade(String state) throws IOException {
+        if (state == null || state.isEmpty()) return;
+        SharedPreferences preferences = appContext.getSharedPreferences(UPGRADE_BACKUP_PREFS, Context.MODE_PRIVATE);
+        if (preferences.getBoolean(UPGRADE_BACKUP_MARKER, false)) return;
+
+        File directory = new File(appContext.getFilesDir(), UPGRADE_BACKUP_DIR);
+        if (!directory.isDirectory() && !directory.mkdirs() && !directory.isDirectory()) {
+            throw new IOException("无法创建升级备份目录");
+        }
+        File destination = new File(directory, UPGRADE_BACKUP_NAME);
+        if (destination.exists()) {
+            validateBackup(destination, state);
+            markUpgradeBackupWritten(preferences);
+            return;
+        }
+
+        File temporary = File.createTempFile(UPGRADE_BACKUP_NAME, ".tmp", directory);
+        boolean renamed = false;
+        try {
+            byte[] bytes = state.getBytes(StandardCharsets.UTF_8);
+            try (FileOutputStream output = new FileOutputStream(temporary)) {
+                output.write(bytes);
+                output.flush();
+                output.getFD().sync();
+            }
+            if (!temporary.renameTo(destination)) throw new IOException("无法提交升级备份");
+            validateBackup(destination, state);
+            renamed = true;
+            markUpgradeBackupWritten(preferences);
+        } finally {
+            if (!renamed && temporary.exists() && !temporary.delete()) {
+                // A failed command must leave the original database state untouched; a stale
+                // temporary file is harmless and will never be used as the backup.
+            }
+        }
+    }
+
+    private static void validateBackup(File file, String original) throws IOException {
+        if (!file.isFile() || file.length() == 0) throw new IOException("已有升级备份无效，请保留原数据后检查存储空间");
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        try (InputStream input = new FileInputStream(file)) {
+            byte[] buffer = new byte[8192]; int count;
+            while ((count = input.read(buffer)) != -1) bytes.write(buffer, 0, count);
+        }
+        String saved = new String(bytes.toByteArray(), StandardCharsets.UTF_8);
+        // A malformed original is recoverable byte-for-byte; later restarts may have a newer state.
+        if (saved.equals(original)) return;
+        try {
+            JSONObject data = new JSONObject(saved);
+            if (data.optJSONArray("orders") == null || data.optJSONArray("operations") == null)
+                throw new org.json.JSONException("incomplete state");
+        } catch (org.json.JSONException invalid) { throw new IOException("已有升级备份不完整，已停止修改原数据"); }
+    }
+
+    private static void markUpgradeBackupWritten(SharedPreferences preferences) throws IOException {
+        if (!preferences.edit().putBoolean(UPGRADE_BACKUP_MARKER, true).commit()) {
+            throw new IOException("无法记录升级备份状态");
+        }
     }
 
     public synchronized JSONObject refreshSnapshot() throws Exception {

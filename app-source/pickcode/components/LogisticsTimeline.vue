@@ -4,6 +4,8 @@
       <PhoneText class="description" :text="'最新物流：' + (latest.description || latest.location)" />
       <PhoneText class="muted" :text="eventTime(latest) + (latest.location && latest.description ? ' · '+latest.location : '')" />
     </view>
+    <text v-if="loading" class="muted">正在加载物流详情…</text>
+    <view v-if="error" class="detail-error" role="alert"><text>{{ error }}</text><button class="retry" @click.stop="$emit('retry')">重试</button></view>
     <text v-if="notice" class="notice" :class="{ warning: shipment.logisticsState === 'error' || shipment.logisticsError }">{{ notice }}</text>
     <text v-if="updatedTime" class="muted">轨迹更新 {{ updatedTime }}</text>
     <text v-if="checkedTime && checkedTime !== updatedTime" class="muted">最近查询 {{ checkedTime }}</text>
@@ -23,9 +25,11 @@
 import PhoneText from '@/components/PhoneText.vue';
 export default {
   components: { PhoneText },
-  props:{shipment:{type:Object,default:()=>({})},expandedOnly:Boolean},
+  props:{shipment:{type:Object,default:()=>({})},expandedOnly:Boolean,loading:Boolean,error:{type:String,default:''}},
+  emits:['load','retry'],
   data:()=>({expanded:false}),
-  watch:{'shipment.id'(){this.expanded=false;}},
+  mounted(){this.$emit('load');},
+  watch:{'shipment.id'(){this.expanded=false;this.$emit('load');}},
   computed:{
     events(){return (Array.isArray(this.shipment.logisticsEvents)?this.shipment.logisticsEvents:[]).filter(event=>event&&(event.description||event.location)).slice().sort((a,b)=>(this.validTime(b.time)||0)-(this.validTime(a.time)||0));},
     latest(){return this.events[0];},
@@ -42,7 +46,7 @@ export default {
 </script>
 <style scoped lang="scss">
 .logistics{width:100%;min-width:0;margin-top:14px;font-size:14px;line-height:1.7;color:var(--sf-text);word-break:break-word;overflow-wrap:anywhere;}
-.description,.muted,.notice{display:block;white-space:pre-wrap;}.latest{margin-bottom:8px;}.description{line-height:1.7;}.muted,.notice{color:var(--sf-muted);font-size:12px;line-height:1.75;}.warning{color:#80591f;background:#fff3da75;border:1px solid #dac9ad;border-radius:11px;padding:9px 11px;margin:8px 0;font-size:13px;}
+ .description,.muted,.notice{display:block;white-space:pre-wrap;}.latest{margin-bottom:8px;}.description{line-height:1.7;}.muted,.notice{color:var(--sf-muted);font-size:12px;line-height:1.75;}.warning{color:#80591f;background:#fff3da75;border:1px solid #dac9ad;border-radius:11px;padding:9px 11px;margin:8px 0;font-size:13px;}.detail-error{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:8px 0;padding:9px 11px;border:1px solid #dac9ad;border-radius:11px;background:#fff3da75;color:#80591f;font-size:13px;line-height:1.6;}.retry{flex:none;min-height:32px;padding:4px 9px;border:1px solid #b98f48;border-radius:8px;color:#80591f;background:transparent;font-size:12px;}.retry:focus-visible{outline:3px solid var(--sf-blue);outline-offset:3px;}
 .toggle{display:block;width:auto;min-height:44px;padding:8px 0;margin:4px 0 0;background:transparent;text-align:left;font-size:14px;line-height:1.7;color:var(--sf-blue);border-radius:0;}.toggle::after{border:0;}.toggle:focus-visible{outline:3px solid var(--sf-blue);outline-offset:3px;}
 .events{margin-top:10px;padding-left:7px;}.event{position:relative;padding:0 0 21px 20px;border-left:1px solid #b5c4d7;}.event::before{content:'';position:absolute;left:-4px;top:6px;width:7px;height:7px;border-radius:50%;background:#8f9fb5;box-shadow:0 0 0 4px #eef3f8;}.event.current::before{background:var(--sf-blue);}.event.current .description{font-weight:600;}.event .description{margin-top:4px;}.event:last-of-type{border-color:transparent;padding-bottom:8px;}.cache-note{margin-top:8px;}
 @media(forced-colors:active){.event::before{background:CanvasText;}.event.current::before{background:Highlight;}}

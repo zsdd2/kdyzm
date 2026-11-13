@@ -87,6 +87,7 @@ function shipmentProgress(shipment, order) {
   const status = normalizedText(shipment.status);
   if (status === 'transit') return 'transit';
   if (['arrived', 'awaiting_code', 'pending', 'signed'].includes(status)) return 'pickup';
+  if (shipment.platformView) return shipment.platformView.awaitingShipment === true ? 'waiting' : 'other';
   if ((!status || status === 'unknown') && !(shipment.arrivalAt > 0) && !(shipment.smsArrivalAt > 0) && packagePlatform(order) === 'jd' && hasExplicitWaitingStatus(order, shipment)) return 'waiting';
   return 'other';
 }

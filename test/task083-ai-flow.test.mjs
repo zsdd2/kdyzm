@@ -203,7 +203,8 @@ test('AI-disabled service restart backfills persisted legacy arrival once withou
     logisticsEvents: [{ time: arrival, timePrecision: 'second', description: `【驿站】您的包裹已存放至【${STATION}】` }] };
   service.store.db.prepare('UPDATE shipments SET data=? WHERE id=?').run(JSON.stringify(legacy), legacy.id);
   const before = service.store.snapshot([account.id]);
-  assert.equal(before.shipments[0].arrivalAt, 0);
+  assert.equal(service.store.shipment(initial.id).arrivalAt, 0, 'legacy persistence remains undated before restart');
+  assert.equal(before.shipments[0].arrivalAt, arrival, 'snapshot projection exposes deterministic legacy arrival');
   await close();
 
   service = createService(options);

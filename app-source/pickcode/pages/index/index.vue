@@ -35,8 +35,9 @@
             <uni-icons type="plusempty" size="18" color="#fff" />
             <text>{{ addingCode ? '添加中' : '添加' }}</text>
           </button>
-          <button class="read-sms-btn" role="button" :tabindex="scanning ? -1 : 0" :disabled="scanning" :aria-disabled="scanning" :aria-busy="scanning" :aria-label="scanning ? '正在更新取件记录' : '一键更新取件记录'" @click="readSms">
+          <button class="read-sms-btn" role="button" :tabindex="scanning ? -1 : 0" :disabled="scanning" :aria-disabled="scanning" :aria-busy="scanning" :aria-label="scanning ? '正在扫描短信' : '扫描短信'" @click="readSms">
             <uni-icons type="refreshempty" size="22" color="#0867ff" />
+            <text class="scan-label">{{ scanning ? '扫描中' : '扫描短信' }}</text>
           </button>
         </view>
       </view>
@@ -277,7 +278,7 @@ import OrderOverview from '@/components/OrderOverview.vue';
 import ParcelJourney from '@/components/ParcelJourney.vue';
 import { parcelJourney, JOURNEY_COMPLETION_MS } from '@/services/parcel-journey.js';
 import StationChooser from '@/components/StationChooser.vue';
-import { getSnapshot, getSyncStatus, mutate, refreshAll, refreshOnline as refreshOnlineOrders, syncOnline } from '@/services/assistant.js';
+import { getSnapshot, getSyncStatus, mutate, refreshAll, refreshOnline as refreshOnlineOrders, scanAndMatch, syncOnline } from '@/services/assistant.js';
 import { pendingCount, reconcileExpandedDates } from '@/services/pickup-groups.js';
 import { groupCodesByStation, pickupCabinet, pickupSections, reconcileExpandedStations } from '@/services/station-presentation.js';
 import { shouldArchivePackage } from '@/core/package-presentation.js';
@@ -299,7 +300,7 @@ export default {
   },
   computed: {
     lastSyncText() { return this.snapshot.online?.lastSuccessAt ? new Date(this.snapshot.online.lastSuccessAt).toLocaleString('zh-CN',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}) : ''; },
-    onlineText() { const online=this.snapshot.online || {}; if(!this.hydrated)return '正在读取本地记录…'; if(this.scanning || this.syncing || this.backgroundSyncing)return this.refreshProgressText === '更新中' ? '正在更新包裹…' : this.refreshProgressText; if(!online.bound)return '线上账号未绑定 · 短信和手动取件可继续使用'; if(online.jobs?.some(job=>['queued','running'].includes(job.state)))return '订单仍在后台处理中，稍后刷新查看'; return (online.lastSuccessAt ? this.lastSyncText+' 已同步记录' : '线上账号已绑定 · 尚未同步')+(online.pendingCount ? ' · '+online.pendingCount+' 个操作待同步' : ''); },
+     onlineText() { const online=this.snapshot.online || {}; if(!this.hydrated)return '正在读取本地记录…'; if(this.scanning)return '正在扫描短信…'; if(this.syncing || this.backgroundSyncing)return this.refreshProgressText === '更新中' ? '正在更新包裹…' : this.refreshProgressText; if(!online.bound)return '线上账号未绑定 · 短信和手动取件可继续使用'; if(online.jobs?.some(job=>['queued','running'].includes(job.state)))return '订单仍在后台处理中，稍后刷新查看'; return (online.lastSuccessAt ? this.lastSyncText+' 已同步记录' : '线上账号已绑定 · 尚未同步')+(online.pendingCount ? ' · '+online.pendingCount+' 个操作待同步' : ''); },
     notificationItems() {
       const items = [], online = this.snapshot.online || {}, busy = this.scanning || this.syncing || this.backgroundSyncing;
       if (this.loadError) items.push({ id: 'load', kind: 'error', title: '本地记录读取失败', body: this.loadError, action: 'load', actionLabel: '重试' });
@@ -351,8 +352,8 @@ export default {
     },
     expandedGroups() { return Object.assign(Object.create(null), this.pickupGrouping === 'station' ? this.expandedStations : this.expandedDates); },
     receiptDetail() { return this.receiptDetailTarget ? this.receiptDeliveries.find(entry => entry.order.id === this.receiptDetailTarget.orderId && entry.shipment.id === this.receiptDetailTarget.shipmentId) || null : null; },
-    receiptDeliveries() {
-      return (this.snapshot.packages || []).filter(order => order.source === 'online' && !order.hidden && !shouldArchivePackage(order)).flatMap(order => (order.shipments || []).filter(shipment => shipment.needsReceiptConfirmation && !shipment.picked && !shipment.hidden).map(shipment => ({ order, shipment, journey: parcelJourney(shipment, order) })));
+     receiptDeliveries() {
+      return (this.snapshot.packages || []).filter(order => order.source === 'online' && !order.hidden && !shouldArchivePackage(order)).flatMap(order => (order.shipments || []).filter(shipment => (shipment.needsReceiptConfirmation || shipment.platformView?.requiresReceiptConfirmation) && !shipment.picked && !shipment.hidden).map(shipment => ({ order, shipment, journey: parcelJourney(shipment, order) })));
     }
   },
   onLoad(options) { this.pendingPickupId=options?.pickupId || ''; uni.$on('assistant-changed', this.applySnapshot); uni.$on('assistant-sync-status', this.applySyncStatus); if(typeof window!=='undefined')window.addEventListener('pickcode-open-pickup',this.openPickupIntent); },
@@ -572,7 +573,7 @@ export default {
       this.receiptDetailTarget = { orderId: entry.order.id, shipmentId: entry.shipment.id };
       this._receiptDetailTriggerId = entry.shipment.id;
     },
-    canConfirmReceipt(entry) { return !this.syncing && !this.scanning && !this.confirmingReceiptIds[entry.shipment.id] && !!entry.shipment.id && entry.shipment.canPick !== false; },
+     canConfirmReceipt(entry) { return !this.syncing && !this.confirmingReceiptIds[entry.shipment.id] && !!entry.shipment.id && entry.shipment.canPick !== false; },
     async confirmReceipt(entry) {
       const current = this.receiptDeliveries.find(item => item.order.id === entry.order.id && item.shipment.id === entry.shipment.id);
       if (!current || !this.canConfirmReceipt(current)) return;
@@ -603,22 +604,19 @@ export default {
       try { this.applySnapshot(await mutate('update', { id: item.id, patch: { isPicked: !item.isPicked } })); }
       catch(error) { this.showError(error); }
     },
-    async readSms() {
+     async readSms() {
       if (this.scanning) return;
-      const binding = this.onlineBindingKey();
-      this.scanning = true; this.syncMessage = ''; this.syncErrors = { sms: '', online: '' };
+       this.scanning = true; this.syncMessage = ''; this.syncErrors = { ...this.syncErrors, sms: '' };
       try {
-        const result = await refreshAll(progress => { this.refreshProgressText = progress?.label || '更新中'; });
-        const sameBinding = binding === this.onlineBindingKey(), nextSnapshot = result.snapshot || result;
-        if (sameBinding || this.onlineBindingKey(nextSnapshot) === this.onlineBindingKey()) this.applySnapshot(nextSnapshot);
-        const onlineError = sameBinding ? result.onlineError : '', pending = sameBinding && result.pending;
-        const errors = [result.smsError, onlineError].filter(Boolean).map(error => error.message || error);
-        this.syncErrors = { sms: result.smsError?.message || result.smsError || '', online: onlineError?.message || onlineError || '' };
-        const pendingNotice = result.pendingNotice || '订单仍在后台处理中，稍后刷新查看';
-        if (pending) errors.push(pendingNotice);
-        this.syncMessage = pending ? pendingNotice : sameBinding && result.onlineNotice ? '匹配完成 · '+result.onlineNotice : errors.length ? '' : '匹配完成';
-        uni.showToast({title: pending ? '后台仍在处理' : errors.length ? '部分完成' : '匹配完成',icon:'none'});
-      } catch(error) { this.syncErrors.sms = error.message || '更新失败，请重试'; this.showError(error); }
+         const runner = typeof scanAndMatch === 'function' ? scanAndMatch : refreshAll;
+         const result = await runner(progress => { this.refreshProgressText = progress?.label || '扫描中'; });
+         const nextSnapshot = result?.snapshot || result;
+         if (nextSnapshot && typeof nextSnapshot === 'object') this.applySnapshot(nextSnapshot);
+         const smsError = result?.smsError;
+         this.syncErrors = { ...this.syncErrors, sms: smsError?.message || smsError || '' };
+         this.syncMessage = smsError ? '' : '短信扫描与匹配完成';
+         uni.showToast({ title: smsError ? '短信扫描未完成' : '扫描完成', icon: 'none' });
+       } catch(error) { this.syncErrors.sms = error.message || '扫描失败，请重试'; this.showError(error); }
       finally { this.scanning = false; this.refreshProgressText = '更新中'; }
     },
     openIgnore(item) {
@@ -718,9 +716,10 @@ button[disabled] { opacity:.55; }
 .input-wrapper { flex:1; min-width:0; position:relative; display:flex; align-items:center; }
 .code-input { width:100%; min-width:0; min-height:44px; padding:0 32px 0 11px; box-sizing:border-box; border:1px solid var(--sf-edge); border-radius:12px; background:rgba(250,252,255,.48); font-size:.875rem; color:var(--sf-text); }
 .clear-btn { position:absolute; right:0; top:0; width:36px; min-height:44px; display:flex; align-items:center; justify-content:center; }
-.add-btn, .read-sms-btn { flex:none; min-height:44px; margin:0; padding:10px; display:flex; align-items:center; justify-content:center; gap:4px; border-radius:12px; font-size:.875rem; line-height:1.5; }
+ .add-btn, .read-sms-btn { flex:none; min-height:44px; margin:0; padding:10px; display:flex; align-items:center; justify-content:center; gap:4px; border-radius:12px; font-size:.875rem; line-height:1.5; }
 .add-btn { min-width:64px; background:var(--sf-blue); color:#fff; box-shadow:inset 0 1px 1px #ffffff3b, 0 4px 10px #0867ff14; }
-.read-sms-btn { width:44px; border:1px solid #95b6e5; background:rgba(255,255,255,.28); color:var(--sf-blue); }
+ .read-sms-btn { min-width:86px; border:1px solid #95b6e5; background:rgba(255,255,255,.28); color:var(--sf-blue); }
+ .scan-label { white-space:nowrap; }
 .pickup-grouping { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:4px; padding:4px; margin-bottom:16px; border-radius:18px; }
 .pickup-grouping button { margin:0; padding:8px; min-width:0; min-height:44px; border:1px solid transparent; border-radius:14px; background:transparent; color:var(--sf-muted); font-size:.9375rem; line-height:1.5; }
 .pickup-grouping button[aria-pressed=true] { background:rgba(255,255,255,.55); border-color:var(--sf-edge); color:var(--sf-blue); font-weight:650; box-shadow:0 2px 8px #33496308; }

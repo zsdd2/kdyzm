@@ -17,7 +17,7 @@ async function harness(run) {
     calls.push({ url, options });
     if (url.endsWith('/v1/devices')) return response({ token: randomBytes(24).toString('hex'), deviceId: 'device-' + (++fixture.binding), accounts: [] });
     if (url.endsWith('/v1/devices/current')) return response({ revoked: true });
-    if (url.endsWith('/v1/snapshot')) return response({ schemaVersion: 1, serverRevision: ++fixture.revision,
+    if (new URL(url).pathname === '/v1/snapshot') return response({ schemaVersion: 1, serverRevision: ++fixture.revision,
       accounts: [{ id: 'a', platform: 'jd' }], orders: [{ id: 'o', accountId: 'a', platform: 'jd', title: '合成订单', orderDate: at }],
       shipments: [{ id: 's', orderId: 'o', accountId: 'a', waybillNo: 'JD12345678901', status: 'arrived', station: '示例花园店',
         arrivalAt: fixture.trusted ? at : 0, arrivalAtSource: fixture.trusted ? 'platform_event' : 'unknown', arrivalAtPrecision: fixture.trusted ? 'second' : 'unknown', updatedAt: at }],

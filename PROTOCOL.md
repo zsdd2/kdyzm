@@ -1,6 +1,13 @@
-# App 同步协议 v1
+# App 同步协议 v1（3.2.0 规范投影）
 
-App 3.1.0使用以下兼容JSON接口。HTTPS origin不得带路径或凭证。管理接口用`x-admin-token`；设备用`Authorization: Bearer <device token>`，两种身份互不替代。
+3.2.0 手机使用 `GET /v1/snapshot?view=compact&dataVersion=<64位hex，可省略>`。
+`projectionVersion:2` 与 `dataVersion` 标识轻量实体版本。版本未变时 `metadataOnly:true`，省略订单、运单、标识、别名、隐藏/删除及事件数组；客户端必须已有相同 `dataVersion` 才能应用元数据。授权范围或业务实体变化返回完整轻量实体；纯检查时间不推动实体版本。
+
+每个运单的 `platformView.version=1` 统一提供状态、送达方式、`awaitingShipment`、是否待人工确认、站点/原始位置/柜位、派送员号码、字段质量和 `evidenceKey`。手机保留短信匹配和人工覆盖，不再次解析平台物流。详见 `docs/backend-order-authority-upgrade.md`。
+
+设备 `GET /v1/shipments/:id/logistics` 返回 `{shipmentId,orderId,evidenceKey,logisticsState,logisticsEvents,logisticsTruncated}`。ID 为 32 位 hex，历史别名解析后对运单及订单再次校验授权。详情只读、不触发采集；客户端校验当前绑定和证据版本后缓存。
+
+基础 JSON 接口保持 `schemaVersion:1`，3.2.0 App 和后台需成套升级。同步响应 UTF-8 上限 4,000,000 字节，完整快照主体预算 3,800,000 字节；必需实体超限返回 413 `SNAPSHOT_TOO_LARGE`，客户端保留数据及游标。详情轨迹单独限制在 1,800,000 字节并标明截断。入站请求上限不因响应扩大而改变。HTTPS origin不得带路径或凭证。管理接口用`x-admin-token`；设备用`Authorization: Bearer <device token>`，两种身份互不替代。
 
 | 方法与路径 | 权限 / 用途 |
 | --- | --- |

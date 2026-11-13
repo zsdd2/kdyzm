@@ -90,7 +90,7 @@ test('history budget includes the complete snapshot and stays under the Android 
   store.transaction(() => {
     const addOrder = store.db.prepare('INSERT INTO orders VALUES(?,?,?)');
     const addShipment = store.db.prepare('INSERT INTO shipments VALUES(?,?,?)');
-    for (let i = 1; i < 1200; i++) {
+    for (let i = 1; i < 1500; i++) {
       const id = 'large-order-' + String(i).padStart(32, '0'), sid = 'large-ship-' + String(i).padStart(32, '0');
       const detail = i === 1 ? { dateCheckedAt: NOW, dateError: '保留日期说明', tradeStatus: '待收货', orderStatus: '已发货', refundStatus: '未退款',
         archiveRestoredAnchor: '2026-10-30', archiveRestoredAt: NOW } : {};
@@ -101,8 +101,8 @@ test('history budget includes the complete snapshot and stays under the Android 
   const additional = { matchingFeedback: { items: Array.from({ length: 500 }, (_, i) => ({ id: `feedback-${i}`, revision: 1, status: 'review', error: '缺少可学习原文'.repeat(5), updatedAt: NOW })) } };
   const result = store.snapshot([account.id], undefined, Buffer.byteLength(JSON.stringify(additional), 'utf8'));
   const responseBytes = Buffer.byteLength(JSON.stringify({ ...result, ...additional }), 'utf8');
-  assert.ok(responseBytes <= 1900000, `snapshot response is ${responseBytes} bytes, limit 1900000`);
-  assert.equal(result.orders.length, 1200);
+  assert.ok(responseBytes <= 3800000, `snapshot response is ${responseBytes} bytes, limit 3800000`);
+   assert.equal(result.orders.length, 1500);
   assert.ok(result.orders.some(o => !o.imageUrl));
   assert.equal(store.order(seed.orders[0].id).imageUrl, imageUrl);
   assert.ok(result.orders.every(o => o.retention.version === 1 && o.retention.anchorDate === '2026-10-30' && o.retention.archived === false));
@@ -114,4 +114,24 @@ test('history budget includes the complete snapshot and stays under the Android 
   assert.ok(result.shipments.some(s => s.logisticsTruncated));
   const raw = store.db.prepare('SELECT data FROM shipments WHERE id=?').get(result.shipments.at(-1).id);
   assert.equal(JSON.parse(raw.data).logisticsEvents.length, 20);
+});
+
+test('base entities that exceed the response budget fail explicitly with 413', t => {
+  const { store, account, sync } = fixture(t);
+  sync();
+  const seed = store.snapshot([account.id]).orders[0];
+  store.transaction(() => {
+    const addOrder = store.db.prepare('INSERT INTO orders VALUES(?,?,?)');
+    for (let i = 1; i <= 5000; i++) {
+      const id = 'oversize-order-' + String(i).padStart(32, '0');
+      addOrder.run(id, account.id, JSON.stringify({
+        ...seed,
+        id,
+        platformOrderId: 'oversize-' + i,
+        title: '基础实体'.repeat(120),
+        imageUrl: '',
+      }));
+    }
+  });
+  assert.throws(() => store.snapshot([account.id]), error => error?.status === 413 && error?.code === 'SNAPSHOT_TOO_LARGE');
 });

@@ -104,14 +104,39 @@ test('AI-approved aliases immediately refresh original cached station evidence w
   assert.equal(service.store.snapshot([account.id]).serverRevision, after.serverRevision);
 });
 
-test('one-click account sync refreshes cached classification before collection and after completion, including cooldown', async t => {
+test('one-click account sync does not refresh the whole cache when collection changes no evidence', async t => {
   const { service, account } = await fixture(t, { collector: async () => ({ orders: [], shipments: [], warnings: [] }) });
   const device = service.store.redeem(service.store.createPairing({ accountIds: [account.id] }).code, '合成设备');
   let calls = 0; const original = service.store.refreshStationRecognition.bind(service.store);
-  service.store.refreshStationRecognition = values => { calls++; return original(values); };
+  service.store.refreshStationRecognition = (...args) => { calls++; return original(...args); };
   const request = () => fetch(`http://127.0.0.1:${service.server.address().port}/v1/accounts/sync`, { method: 'POST', headers: { Authorization: `Bearer ${device.token}`, 'Content-Type': 'application/json' }, body: '{}' }).then(res => res.json());
   const started = await request(); assert.equal(started.accepted, true);
   for (let n = 0; n < 30 && ['queued', 'running'].includes(service.jobs.read(started.jobs[0].id).state); n++) await new Promise(resolve => setImmediate(resolve));
-  assert.equal(service.jobs.read(started.jobs[0].id).state, 'completed'); assert.ok(calls >= 2);
-  const before = calls; await request(); assert.ok(calls > before);
+  assert.equal(service.jobs.read(started.jobs[0].id).state, 'completed'); assert.equal(calls, 0);
+  const before = calls; await request(); assert.equal(calls, before);
+});
+
+test('collection refreshes only the shipments changed by the import callback', async t => {
+  const { service, account } = await fixture(t, {
+    collector: async () => ({
+      orders: [{ platformOrderId: 'changed-order', title: '合成', orderDate: AT - 86400000 }],
+      shipments: [{ platformOrderId: 'changed-order', waybillNo: 'SYNTHETIC-CHANGED', status: 'unknown',
+        logisticsState: 'ok', logisticsEvents: events(`已交付给${NAME}`) }],
+      warnings: []
+    })
+  });
+  service.stations.saveStation('station-a', { name: NAME });
+  const device = service.store.redeem(service.store.createPairing({ accountIds: [account.id] }).code, '合成设备');
+  const calls = [], original = service.store.refreshStationRecognition.bind(service.store);
+  service.store.refreshStationRecognition = (...args) => { calls.push(args); return original(...args); };
+  const response = await fetch(`http://127.0.0.1:${service.server.address().port}/v1/accounts/sync`, {
+    method: 'POST', headers: { Authorization: `Bearer ${device.token}`, 'Content-Type': 'application/json' }, body: '{}'
+  });
+  const started = await response.json();
+  for (let n = 0; n < 30 && ['queued', 'running'].includes(service.jobs.read(started.jobs[0].id).state); n++) await new Promise(resolve => setImmediate(resolve));
+  assert.equal(service.jobs.read(started.jobs[0].id).state, 'completed');
+  const shipment = service.store.snapshot([account.id]).shipments.find(item => item.waybillNo === 'SYNTHETIC-CHANGED');
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0][1], [shipment.id]);
+  assert.equal(shipment.station, NAME);
 });

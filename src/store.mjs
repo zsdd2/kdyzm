@@ -12,6 +12,8 @@ import { cookieIdentity } from './cookie-sync.mjs';
 import { COLLECTION_COOLDOWN, scheduledSyncAt } from './collection-schedule.mjs';
 import { jdShipmentStatus, retainMilestoneEvents, shippingEvidence } from './shipment-lifecycle.mjs';
 import { normalizeProductImageUrl } from './product-image.mjs';
+import { prepareUpgradeBackup } from './upgrade-backup.mjs';
+import { ShipmentViewCache } from './shipment-view.mjs';
 
 export const stableId = (...values) => hash(JSON.stringify(values)).slice(0, 32);
 const parse = row => row && JSON.parse(row.data);
@@ -131,12 +133,16 @@ const pickupCycleData = (shipmentId, input, old, events, now) => {
 };
 
 export class Store {
-  constructor({ filename = ':memory:', key, now = Date.now, getLogisticsRules }) {
+  constructor({ filename = ':memory:', key, now = Date.now, getLogisticsRules, getStationRules }) {
     if (filename !== ':memory:') mkdirSync(dirname(filename), { recursive: true, mode: 0o700 });
     this.db = new DatabaseSync(filename);
+    try {
+    prepareUpgradeBackup(this.db, filename);
     this.key = key;
     this.now = now;
     this.getLogisticsRules = getLogisticsRules;
+    this.getStationRules = getStationRules;
+    this.shipmentViews = new ShipmentViewCache();
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;
       CREATE TABLE IF NOT EXISTS meta (id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL);
       INSERT OR IGNORE INTO meta VALUES(1,0);
@@ -170,6 +176,7 @@ export class Store {
       }
     });
     new PickupCompletionStore({ store: this, now });
+    } catch (error) { this.db.close(); throw error; }
   }
   close() { this.db.close(); }
   transaction(fn) {
@@ -399,6 +406,29 @@ export class Store {
   account(id) { return this.accountFamily(parse(this.db.prepare('SELECT data FROM accounts WHERE id=?').get(id))); }
   order(id) { return parse(this.db.prepare('SELECT data FROM orders WHERE id=?').get(id)); }
   shipment(id) { return parse(this.db.prepare('SELECT data FROM shipments WHERE id=?').get(id)); }
+  shipmentView(shipment, order = this.order(shipment.orderId)) {
+    const platform = order?.platform, now = this.now(), rules = this.getLogisticsRules?.();
+    const stationRules = this.getStationRules?.();
+    const catalog = Array.isArray(stationRules) ? stationRules : stationRules?.stations || [];
+    const legacyDoorstep = !validTime(shipment.arrivalAt) ? doorstepEvidence(shipment.logisticsEvents, { platform, carrier: shipment.carrier }, now) : {};
+    let pickup = pickupData(legacyDoorstep, shipment, this.getLogisticsRules ? [] : shipment.logisticsEvents || [], undefined, now, platform);
+    const shipping = platform === 'jd' || !['shippedAt', 'shippedAtSource', 'shippedAtPrecision'].every(field => Object.hasOwn(shipment, field))
+      ? shippingEvidence(shipment.logisticsEvents || [], shipment, now, shipment.pickupCycle, platform) : {};
+    let status = platform === 'jd' && !['arrived', 'signed'].includes(shipment.status)
+      ? jdShipmentStatus(shipment.logisticsEvents || [], shipment.status, rules, now) : shipment.status;
+    const archived = order?.retention?.archived ?? (order ? orderRetention(order, now).archived : !!shipment.archived);
+    if (!archived && !shipment.picked && !effectivePicked(pickupCompletionState(shipment)) && !shipment.hidden && !shipment.deleted
+      && shipment.stationSource !== 'locker' && !(shipment.logisticsEvents || []).some(event => logisticsEventTimeIssue(event, now) === 'timeConflict')) {
+      const catalogEvidence = globalThis.PickCodeLogistics.catalogPickupEvidence(shipment.logisticsEvents || [], catalog, rules);
+      const trusted = pickup.arrivalAt && ['platform_event', 'locker_arrival'].includes(pickup.arrivalAtSource);
+      if (catalogEvidence.arrivalAt && catalogEvidence.arrivalAt <= now && (!trusted || !globalThis.PickCodeLogistics.catalogStation(pickup.station, catalog).id)) {
+        pickup = { ...pickup, ...catalogEvidence, ...(trusted ? { arrivalAt: pickup.arrivalAt, arrivalAtSource: pickup.arrivalAtSource, arrivalAtPrecision: pickup.arrivalAtPrecision } : {}) };
+        status = 'arrived';
+      }
+    }
+    return this.shipmentViews.project({ ...shipment, ...pickup, ...shipping, status, archived,
+      ...(retainedSignedShipment(shipment, archived, now) || {}) }, { platform, orderStatus: platform === 'jd' ? [order?.tradeStatus, order?.orderStatus].filter(Boolean).join(' ') : '', catalog, rules, now });
+  }
   accounts(ids) {
     const allowed = ids && new Set(ids);
     return this.db.prepare('SELECT data FROM accounts ORDER BY id').all().map(parse).filter(a => !allowed || allowed.has(a.id)).map(a => this.accountFamily(a));
@@ -730,7 +760,7 @@ export class Store {
       return changed;
     });
   }
-  snapshot(scope, accountFilter, additionalBytes = 0) {
+  snapshot(scope, accountFilter, additionalBytes = 0, includeLogistics = true) {
     const device = Array.isArray(scope) ? { accountIds: scope, legacyAccountIds: scope, familyIds: [] } : scope;
     const narrowed = accountFilter && new Set(accountFilter);
     const visible = record => this.canRead(device, record) && (!narrowed || narrowed.has(record.accountId));
@@ -769,9 +799,12 @@ export class Store {
       const compactCycle = s.pickupCycle ? { id: s.pickupCycle.id, startedAt: s.pickupCycle.startedAt, evidenceKey: s.pickupCycle.evidenceKey, status: s.pickupCycle.status } : undefined;
       const archived = !!orderById.get(s.orderId)?.archived;
       const receipt = retainedSignedShipment(s, archived, this.now());
+      const platformView = this.shipmentView(s, orderById.get(s.orderId));
       return { ...publicShipment, ...(archived ? { archived: true } : {}), ...(receipt || {}), ...(compactCycle ? { pickupCycle: compactCycle } : {}), ...(pickupCycleHistory?.length ? { pickupCycleHistory } : {}), ...pickup, pickupCompletion: pickupCompletionState(s), pickupCode: s.arrivalAt && !pickup.arrivalAt ? '' : s.pickupCode,
         ...(jd || shipping.shippedAt ? shipping : {}), ...manual,
-        familyId: s.familyId || '', familyName: s.familyName || '' };
+        familyId: s.familyId || '', familyName: s.familyName || '', platformView,
+        status: platformView.status, station: platformView.station.rawName, stationSource: platformView.stationSource,
+        arrivalAt: platformView.arrivalAt, arrivalAtSource: platformView.arrivalAtSource, arrivalAtPrecision: platformView.arrivalAtPrecision };
     });
     const visibleShipmentIds = new Set(shipments.map(shipment => shipment.id));
     const shipmentIdentifiers = this.db.prepare('SELECT account_id,platform,shipment_id,order_id,platform_package_key,carrier_raw,carrier_key,waybill_raw,waybill_key,source,created_at,updated_at FROM shipment_identifiers ORDER BY id').all()
@@ -789,6 +822,10 @@ export class Store {
     const histories = shipments.map(shipment => {
       const events = shipment.logisticsEvents || [];
       shipment.logisticsEvents = []; shipment.logisticsTruncated = !!shipment.logisticsTruncated;
+      if (!includeLogistics) {
+        shipment.logisticsEventCount = events.length;
+        shipment.detailsAvailable = events.length > 0 || shipment.logisticsTruncated;
+      }
       return { shipment, events };
     });
     const { enabled, aiEnabled } = this.pickupCompletion.config();
@@ -796,7 +833,7 @@ export class Store {
       hiddenIds: shipments.filter(s => s.hidden).map(s => s.id), deletedIds: shipments.filter(s => s.deleted).map(s => s.id),
       events: shipments.filter(s => s.arrivalAt).map(s => ({ id: stableId(s.id, 'arrival', s.arrivalAt), shipmentId: s.id, arrivedAt: s.arrivalAt, code: s.pickupCode, stationKey: s.station })),
       syncWarnings: accounts.flatMap(a => (a.warnings || []).map(message => ({ accountId: a.id, message }))) };
-    const responseLimit = Math.max(0, 1900000 - additionalBytes);
+    const responseLimit = Math.max(0, 3800000 - additionalBytes);
     if (Buffer.byteLength(JSON.stringify(snapshot), 'utf8') > responseLimit) {
       // Clients treat these absent optional values as empty; retain every non-default fact.
       for (const order of orders) {
@@ -834,9 +871,13 @@ export class Store {
       }
       snapshot.shipmentIdentifiers = allIdentifiers.slice(0, low);
     }
-    // Android caps the entire response at 2,000,000 bytes, not just the histories.
+    // shortcut: bounded full entity set; introduce pagination if real household data exceeds this budget.
+    if (Buffer.byteLength(JSON.stringify(snapshot), 'utf8') > responseLimit)
+      fail(413, 'SNAPSHOT_TOO_LARGE', '订单数据超出单次同步容量，已保留本地记录');
+    // Android caps the entire response at 4,000,000 bytes, not just the histories.
     // Reserve headroom and trim this response only; the SQLite cache remains intact.
-    let historyBudget = Math.max(0, 1900000 - additionalBytes - Buffer.byteLength(JSON.stringify(snapshot), 'utf8'));
+    if (!includeLogistics) return snapshot;
+    let historyBudget = Math.max(0, 3800000 - additionalBytes - Buffer.byteLength(JSON.stringify(snapshot), 'utf8'));
     histories.sort((a, b) => Number(a.shipment.picked || a.shipment.hidden) - Number(b.shipment.picked || b.shipment.hidden));
     for (const { shipment, events } of histories) {
       for (const event of events) {

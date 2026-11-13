@@ -8,6 +8,13 @@ import { candidateOf } from '../public/station-admin.js';
 const NOW = Date.parse('2026-11-06T12:00:00+08:00');
 const ADMIN = 'synthetic-admin-token-at-least-32-characters';
 const response = value => ({ choices: [{ message: { content: JSON.stringify(value) } }] });
+const withoutEvidenceKeys = snapshot => ({
+  ...snapshot,
+  shipments: snapshot.shipments.map(shipment => {
+    const { evidenceKey, ...platformView } = shipment.platformView || {};
+    return { ...shipment, platformView };
+  }),
+});
 async function fixture(t, { aiRequest } = {}) {
   let time = NOW, calls = [];
   const service = createService({ encryptionKey: 'ab'.repeat(32), adminToken: ADMIN, fixture: true, scheduler: false, now: () => time,
@@ -242,7 +249,8 @@ test('AI receives separate sanitized mapping, preserves cabinet evidence and app
   assert.equal(input.confirmedMapping.targetStationId, 'target'); assert.ok(input.fragment.includes('2号柜'));
   assert.equal(f.service.matchingFeedback.summary(f.device).items[0].status, 'applied');
   assert.equal(f.service.stations.automationHistory()[0].canRollback, true);
-  assert.deepEqual(f.service.store.snapshot(f.device), before);
+  // Re-projecting the applied alias refreshes evidence identity; business fields remain stable.
+  assert.deepEqual(withoutEvidenceKeys(f.service.store.snapshot(f.device)), withoutEvidenceKeys(before));
   f.service.stations.rollbackAutomaticAlias(id);
   assert.equal(f.service.matchingFeedback.summary(f.device).items[0].status, 'review');
   assert.equal(f.service.stations.station('target').aliases.length, 0);

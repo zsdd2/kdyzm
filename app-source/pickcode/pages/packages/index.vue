@@ -59,7 +59,7 @@
                 <text v-if="!card.collected && summaryLogistics(card)" class="order-summary">{{ summaryLogistics(card) }}</text>
               </button>
               <view v-if="!isExpiredOrder(card) && summaryShipment(card) && displayPickupCode(summaryShipment(card)) && !summaryShipment(card).picked" class="pickup-row">
-                <view class="pickup-copy"><view class="pickup-line"><text v-if="pickupCabinet(summaryShipment(card))" class="cabinet-badge">{{ pickupCabinet(summaryShipment(card)) }}</text><button role="button" tabindex="0" class="pickup-code" :class="{ 'long-code': displayPickupCode(summaryShipment(card)).length > 8 }" @click="copyValue(displayPickupCode(summaryShipment(card)), '取件码')">{{ displayPickupCode(summaryShipment(card)) }}</button></view><text class="station">{{ stationDisplayName(summaryShipment(card), '站点未知') }}</text></view>
+                 <view class="pickup-copy"><view class="pickup-line"><text v-if="pickupCabinet(summaryShipment(card))" class="cabinet-badge">{{ pickupCabinet(summaryShipment(card)) }}</text><button role="button" tabindex="0" class="pickup-code" :class="{ 'long-code': displayPickupCode(summaryShipment(card)).length > 8 }" @click="copyValue(displayPickupCode(summaryShipment(card)), '取件码')">{{ displayPickupCode(summaryShipment(card)) }}</button></view><text class="station">{{ shipmentStation(summaryShipment(card)) }}</text></view>
                 <button v-if="journeyCardShipment(list).picked" role="button" tabindex="-1" class="small-primary" disabled aria-disabled="true">已取</button>
                 <button role="button" :tabindex="shipmentBusy(journeyCardShipment(list)) ? -1 : 0" v-else-if="canPickShipment(list, journeyCardShipment(list))" class="small-primary" :disabled="shipmentBusy(journeyCardShipment(list))" :aria-disabled="shipmentBusy(journeyCardShipment(list))" :aria-label="'领取' + list.title" @click="requestPickup(list, journeyCardShipment(list))">{{ claimingShipmentIds[journeyCardShipment(list).id] ? '确认中' : '取件' }}</button>
                 <button role="button" :tabindex="(!!syncingOrderId || list.hidden) ? -1 : 0" v-else-if="journeyCardShipment(list).needsPickupAssignment" class="small-primary" :disabled="!!syncingOrderId || list.hidden" :aria-disabled="!!syncingOrderId || list.hidden" @click="claimShipment(list, journeyCardShipment(list))">确认归属</button>
@@ -424,10 +424,15 @@ export default {
       catch (e) { uni.showToast({ title: e.message || '恢复失败', icon: 'none' }); }
       finally { this.syncingOrderId = ''; }
     },
-    isReceiptShipment(s) { return Boolean(s.needsReceiptConfirmation || s.isHomeDelivery); },
+     isReceiptShipment(s) { return Boolean(s.needsReceiptConfirmation || s.platformView?.requiresReceiptConfirmation || s.isHomeDelivery); },
     shipmentText(s) { if (s.receiptState === 'expired_signed') return '超期自动确认收到'; if (this.isReceiptShipment(s)) return s.picked ? '已收货' : '已送达·待确认'; return ({ transit: '运输中', arrived: '已到站', signed: '物流已签收', unknown: '待更新' })[s.status] || s.status || '待更新'; },
     orderDateText(item) { if (this.dateKey(item) !== 'unknown') { if (item.source === 'manual' || item.dateOverride) return (item.source === 'manual' ? '记录日期：' : '人工修正日期：') + String(item.dateOverride || new Date(item.orderDate).toLocaleDateString('sv-SE')); const origin = item.orderDateOrigin === 'detail' ? ' · 平台订单详情' : item.orderDateOrigin === 'list' ? ' · 平台订单列表' : ''; return '下单时间：' + new Date(item.orderDate).toLocaleString('zh-CN', { hour12: false }) + origin; } const checked = new Date(item.dateCheckedAt); return item.dateCheckedAt && !Number.isNaN(checked.getTime()) ? '下单日期待确认 · 最近补查 ' + checked.toLocaleString('zh-CN', { hour12: false }) + '，仍未获得有效日期' : '下单日期待确认 · 等待平台补全'; },
     displayPickupCode(shipment) { return shipment.displayPickupCode || ''; },
+     shipmentStation(shipment) {
+       const station = shipment?.platformView?.station || {};
+       const name = station.displayName || station.name || stationDisplayName(shipment, '站点未知');
+       return station.conflict ? name + '（站点待核对）' : name;
+     },
     copyValue(value, label) { if (value) uni.setClipboardData({ data: String(value), success: () => uni.showToast({ title: '已复制' + label, icon: 'none' }) }); },
     canPickShipment(item, shipment) { return !this.isExpiredOrder(item) && !shipment.archived && item.source === 'online' && !item.hidden && shipment.canPick !== false && !shipment.hidden && !shipment.picked && !!shipment.id && !shipment.needsPickupAssignment; },
     shipmentBusy(shipment) { return !!this.syncingOrderId || !!this.claimingShipmentIds[shipment.id]; },

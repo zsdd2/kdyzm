@@ -2,8 +2,8 @@
     "name" : "私人取件助手",
     "appid" : "__UNI__6D58568",
     "description" : "本地短信识别、线上包裹同步与个人取件管理",
-    "versionName" : "3.1.52",
-    "versionCode" : 30152,
+    "versionName" : "3.2.0",
+    "versionCode" : 30200,
     "transformPx" : false,
     "app-plus" : {
         "usingComponents" : true,

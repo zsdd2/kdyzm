@@ -1,8 +1,8 @@
 <template>
   <view class="logistics-rules sf-page">
     <view class="scope-note sf-surface">
-      <text class="scope-title">仅本机生效</text>
-      <text>这些规则只用于本机物流识别，不会上传或修改后台的物流识别规则。</text>
+      <text class="scope-title">历史缓存规则</text>
+      <text>新版平台订单由后台统一识别。这里的规则仅处理尚未同步升级的旧缓存；平台识别规则请在后台调整。</text>
       <text>预计、未到达、退回、中转和催取提醒不会被当作新的到站事件。</text>
     </view>
 

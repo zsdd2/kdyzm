@@ -20,7 +20,7 @@ import java.util.concurrent.FutureTask;
 
 /** Serializes device sessions, not the SQLite store; every network request occurs outside store transactions. */
 public final class OnlineSyncManager {
-    static final int IMPORT_VERSION = 327;
+    static final int IMPORT_VERSION = 328;
     private static final int MAX_JOBS = 100;
     private static final ExecutorService STATION_UPLOADS = Executors.newSingleThreadExecutor(task -> {
         Thread thread = new Thread(task, "pickcode-station-fragments");
@@ -304,6 +304,27 @@ public final class OnlineSyncManager {
             return recordFailure(new OnlineClient.Failure("order_unavailable", "此订单无法刷新，请重新同步后选择订单"));
         return synchronize(false, id);
     }
+    public JSONObject shipmentDetails(String id) throws Exception {
+        final long generation = sessionGeneration;
+        final String session = scheduledSessionKey();
+        if (session.isEmpty()) throw new OnlineClient.Failure("not_bound", "请先绑定后台再查看物流详情");
+        JSONObject target = store.dispatch("shipmentDetailTarget", new JSONObject().put("id", id));
+        String remoteId = target.optString("remoteId");
+        if (!remoteId.matches("[0-9a-f]{32}")) throw invalidResponse();
+        String base = metadata.getString("baseUrl", ""), lan = metadata.getString("lanBaseUrl", ""), identity = metadata.getString("serviceId", "");
+        String token;
+        try { token = secrets.read(); }
+        catch (Exception unavailable) { throw new OnlineClient.Failure("credentials_unavailable", "设备凭证无法读取，请重新绑定"); }
+        // Details do not queue behind collection, and never hold a store transaction during HTTP.
+        JSONObject result = bindingWriteClient(base, lan, identity, token)
+                .request("GET", "/v1/shipments/" + remoteId + "/logistics", null, null).body;
+        if (generation != sessionGeneration || !session.equals(scheduledSessionKey()))
+            throw new OnlineClient.Failure("session_changed", "后台绑定已变化，请重新展开详情");
+        if (result == null || !(result.opt("shipmentId") instanceof String) || !(result.opt("orderId") instanceof String)
+                || !result.optString("evidenceKey").matches("[a-f0-9]{64}") || result.optJSONArray("logisticsEvents") == null)
+            throw invalidResponse();
+        return store.dispatch("importShipmentDetails", result.put("id", id).put("bindingKey", target.getString("bindingKey")));
+    }
     public synchronized JSONObject proposeStation(JSONObject payload) throws Exception {
         if (!secrets.configured()) throw new OnlineClient.Failure("not_bound", "请先绑定线上服务，再提交站点关系");
         if (!hasCapability(store.snapshot().optJSONObject("online"), "station_aliases_v1"))
@@ -417,16 +438,20 @@ public final class OnlineSyncManager {
         return false;
     }
     private JSONObject pullSnapshot(OnlineClient client, boolean full) throws Exception {
-        if (store.snapshot().getJSONObject("online").optBoolean("needsPickupSync")) full = true;
+        JSONObject current = store.snapshot().getJSONObject("online");
+        if (current.optBoolean("needsPickupSync")) full = true;
         if (metadata.getInt("importVersion", 0) < IMPORT_VERSION) {
             if (!metadata.edit().remove("etag").commit()) throw new IllegalStateException("无法重置同步游标");
             full = true;
         }
-        OnlineClient.Response response = client.request("GET", "/v1/snapshot", null, full ? "" : metadata.getString("etag", ""));
+        String version = full ? "" : current.optString("dataVersion");
+        String path = "/v1/snapshot?view=compact" + (version.matches("[a-f0-9]{64}") ? "&dataVersion=" + version : "");
+        OnlineClient.Response response = client.request("GET", path, null, full ? "" : metadata.getString("etag", ""));
         if (response.notModified) return null;
         validateSnapshot(response.body);
-        JSONObject current = store.snapshot().optJSONObject("online");
-        if (current != null && response.body.getLong("serverRevision") < current.optLong("serverRevision", -1))
+        if (response.body.optBoolean("metadataOnly") && !version.equals(response.body.optString("dataVersion")))
+            throw invalidResponse();
+        if (response.body.getLong("serverRevision") < Math.max(current.optLong("serverRevision", -1), current.optLong("metadataRevision", -1)))
             throw new OnlineClient.Failure("stale_snapshot", "后台数据版本较旧，已保留本地记录，请稍后重试");
         response.body.put("accounts", safeAccounts(response.body.getJSONArray("accounts")));
         if (response.body.has("syncJobs")) response.body.put("syncJobs", safeJobs(response.body.getJSONArray("syncJobs")));
@@ -434,7 +459,9 @@ public final class OnlineSyncManager {
         if (response.body.has("stationRules")) response.body.put("stationRules", safeStationRules(response.body.optJSONArray("stationRules")));
         if (response.body.has("serverLogisticsRules")) response.body.put("serverLogisticsRules", safeServerLogisticsRules(response.body.optJSONArray("serverLogisticsRules")));
         if (response.body.has("matchingFeedback")) response.body.put("matchingFeedback", safeMatchingFeedbackSummary(response.body.optJSONObject("matchingFeedback")));
-        store.dispatch("syncImport", new JSONObject().put("snapshot", response.body).put("syncedAt", System.currentTimeMillis()).put("importVersion", IMPORT_VERSION));
+        if (response.body.optBoolean("metadataOnly"))
+            store.dispatch("syncMetadata", new JSONObject().put("meta", response.body).put("dataVersion", version).put("syncedAt", System.currentTimeMillis()));
+        else store.dispatch("syncImport", new JSONObject().put("snapshot", response.body).put("syncedAt", System.currentTimeMillis()).put("importVersion", IMPORT_VERSION));
         // Neither an old server revision nor an unsuccessful import may advance the conditional cursor.
         if (!metadata.edit().putString("etag", response.etag).putInt("importVersion", IMPORT_VERSION).commit())
             throw new IllegalStateException("无法保存同步游标");
@@ -465,9 +492,13 @@ public final class OnlineSyncManager {
     }
     static JSONArray pollJobs(OnlineClient client, JSONArray previous, Set<String> snapshotJobIds) throws Exception {
         JSONArray result = new JSONArray();
+        int requests = 0;
+        long startedAt = android.os.SystemClock.elapsedRealtime();
         for (int i = 0; i < previous.length(); i++) {
             JSONObject job = previous.getJSONObject(i);
-            if (pendingJob(job) && !snapshotJobIds.contains(job.getString("id"))) {
+            if (pendingJob(job) && !snapshotJobIds.contains(job.getString("id"))
+                    && requests < 3 && android.os.SystemClock.elapsedRealtime() - startedAt < 5_000) {
+                requests++;
                 try {
                     JSONObject response = client.request("GET", "/v1/sync-jobs/" + job.getString("id"), null, null).body;
                     if (response.optJSONObject("job") == null) throw invalidResponse();
@@ -606,8 +637,14 @@ public final class OnlineSyncManager {
         if (data == null || data.optInt("schemaVersion") != 1 || !(data.opt("serverRevision") instanceof Number)
                 || data.optLong("serverRevision", -1) < 0 || data.optDouble("serverRevision") != data.optLong("serverRevision"))
             throw invalidResponse();
-        for (String key : new String[]{"accounts", "orders", "shipments", "hiddenIds", "deletedIds"})
+        boolean metadataOnly = Boolean.TRUE.equals(data.opt("metadataOnly"));
+        if (data.has("metadataOnly") && !(data.opt("metadataOnly") instanceof Boolean)) throw invalidResponse();
+        if (metadataOnly && (data.optInt("projectionVersion") != 2 || !data.optString("dataVersion").matches("[a-f0-9]{64}")))
+            throw invalidResponse();
+        for (String key : metadataOnly ? new String[]{"accounts"} : new String[]{"accounts", "orders", "shipments", "hiddenIds", "deletedIds"})
             if (data.optJSONArray(key) == null) throw invalidResponse();
+        if (metadataOnly) for (String key : new String[]{"orders", "shipments", "hiddenIds", "deletedIds", "shipmentAliases", "shipmentIdentifiers", "events"})
+            if (data.has(key)) throw invalidResponse();
         if (data.has("syncJobs")) { if (data.optJSONArray("syncJobs") == null) throw invalidResponse(); safeJobs(data.getJSONArray("syncJobs")); }
         for (String key : new String[]{"familyIds", "legacyAccountIds"}) if (data.has(key)) safeScopeIds(data.optJSONArray(key));
         if (data.has("families")) { if (data.optJSONArray("families") == null) throw invalidResponse(); safeFamilies(data.getJSONArray("families")); }

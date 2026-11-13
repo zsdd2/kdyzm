@@ -19,8 +19,8 @@ async function harness(run) {
   globalThis.window = { addEventListener() {} };
   const response = data => new Response(JSON.stringify(data), { status: 200, headers: { ETag: '"fixture-' + state.snapshot.serverRevision + '"' } });
   globalThis.fetch = async (url, options) => {
-    const path = new URL(url).pathname;
-    calls.push({ path, method: options.method || 'GET', headers: options.headers, body: options.body ? JSON.parse(options.body) : undefined });
+    const parsed = new URL(url), path = parsed.pathname;
+    calls.push({ path, search: parsed.search, method: options.method || 'GET', headers: options.headers, body: options.body ? JSON.parse(options.body) : undefined });
     if (path === '/v1/devices') return response({ token: 'fixture', deviceId: 'device-a', accounts: state.snapshot.accounts });
     if (path === '/v1/snapshot') return state.unchanged ? new Response(null, { status: 304 }) : response(state.snapshot);
     if (path === '/v1/accounts/sync' || /^\/v1\/orders\/.+\/refresh$/.test(path)) {
@@ -77,6 +77,7 @@ test('后台已更新时采用首次GET的新时间，304时仍跨过严格30分
     state.snapshot.accounts[0].lastFullSuccessAt = state.now;
     await api.syncOnline(false);
     assert.equal(calls.filter(call => call.path === '/v1/accounts/sync').length, 1, '先GET后判断，不能用之前的旧缓存发起');
+    assert.ok(calls.filter(call => call.path === '/v1/snapshot')[0].search.startsWith('?view=compact'));
   });
 });
 
@@ -106,7 +107,7 @@ test('旧投影升级时相同后台revision也重新导入新能力和采集时
     assert.equal(calls.filter(call => call.path === '/v1/snapshot')[1].headers['If-None-Match'], undefined);
     assert.ok(upgraded.online.capabilities.includes('conditionalSync'));
     assert.equal(upgraded.online.accounts[0].lastFullSuccessAt, NOW);
-    assert.equal(upgraded.online.importVersion, 327);
+    assert.equal(upgraded.online.importVersion, 328);
     state.unchanged = true;
     await api.syncOnline(false);
     assert.ok(calls.filter(call => call.path === '/v1/snapshot')[2].headers['If-None-Match']);

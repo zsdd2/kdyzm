@@ -169,7 +169,7 @@ test('JD current structured pickup codes outrank earlier collection and transpor
 });
 
 test('JD current signature, return and transport still override a supplied pickup code and previously saved arrival', t => {
-  for (const [description, status] of [['本人已签收', 'signed'], ['快件已退回，等待退件', 'transit'], ['运输中', 'transit']]) {
+  for (const [description, collectorStatus, snapshotStatus] of [['本人已签收', 'signed', 'signed'], ['快件已退回，等待退件', 'transit', 'returned'], ['运输中', 'transit', 'transit']]) {
     const f = fixture(t);
     const data = tracking([step('您的快件已揽收', -9000), step('物流信息更新', -5000)]);
     data.multiPackageTrackInfoList[0].trackGroupInfo.checkCode = '8-2-1234';
@@ -177,9 +177,9 @@ test('JD current signature, return and transport still override a supplied picku
     assert.equal(f.read().status, 'arrived');
     data.multiPackageTrackInfoList[0].trackGroupInfo.orderTrackShowList.push(step(description));
     const input = jdParcels(data, 'o', NOW)[0];
-    assert.equal(input.status, status, description);
+    assert.equal(input.status, collectorStatus, description);
     f.sync(input);
-    assert.equal(f.read().status, status, description);
+    assert.equal(f.read().status, snapshotStatus, description);
   }
 });
 

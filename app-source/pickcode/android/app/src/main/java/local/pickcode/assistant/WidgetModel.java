@@ -274,6 +274,11 @@ public final class WidgetModel {
                 transit |= "transit".equals(status);
                 boolean unknownShipment = (status.isEmpty() || "unknown".equals(status)) && ship.optLong("arrivalAt") <= 0 && ship.optLong("smsArrivalAt") <= 0;
                 unknown |= unknownShipment;
+                JSONObject view = ship.optJSONObject("platformView");
+                if (view != null) {
+                    waiting |= unknownShipment && view.optBoolean("awaitingShipment");
+                    continue;
+                }
                 JSONArray events = ship.optJSONArray("logisticsEvents");
                 if (unknownShipment && "jd".equals(order.optString("platform")) && events != null) for (int k = 0; k < events.length(); k++) {
                     JSONObject event = events.optJSONObject(k);

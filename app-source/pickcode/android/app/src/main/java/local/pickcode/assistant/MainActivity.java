@@ -231,7 +231,7 @@ public final class MainActivity extends Activity {
                     }
                     return;
                 }
-                ("generateTemplate".equals(action) || "aiChannels".equals(action) || "configureAiOptimization".equals(action) || "approveAiProposal".equals(action) ? network : PickCodeApplication.IO).execute(() -> {
+                ("shipmentDetails".equals(action) || "generateTemplate".equals(action) || "aiChannels".equals(action) || "configureAiOptimization".equals(action) || "approveAiProposal".equals(action) ? network : PickCodeApplication.IO).execute(() -> {
                     try { reply(requestId, execute(action, data), null); }
                     catch (Exception failure) { reply(requestId, null, safeError(action, failure)); }
                 });
@@ -305,6 +305,7 @@ public final class MainActivity extends Activity {
         if ("bindOnline".equals(action)) return OnlineSyncManager.get(this).bind(payload.optString("baseUrl"), payload.optString("code"));
         if ("syncOnline".equals(action)) return OnlineSyncManager.get(this).sync(payload.optBoolean("force"));
         if ("refreshOrder".equals(action)) return OnlineSyncManager.get(this).refreshOrder(payload.optString("id"));
+        if ("shipmentDetails".equals(action)) return OnlineSyncManager.get(this).shipmentDetails(payload.optString("id"));
         if ("stationProposal".equals(action)) return OnlineSyncManager.get(this).proposeStation(payload);
         if ("unbindOnline".equals(action)) return OnlineSyncManager.get(this).unbind();
         if ("scan".equals(action)) return SmsScanner.scan(this);

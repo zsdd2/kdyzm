@@ -2,6 +2,14 @@
   <view class="changelog-container sf-page">
     <view class="version-list" :class="{ expanded: showOlder }">
       <view class="version-item sf-surface">
+        <view class="version-header"><text class="version-name">v3.2.0 · 分支内测版</text><text class="version-date">2026-11-13</text></view>
+        <view class="update-list">
+          <view class="update-item"><text class="tag feature">同步</text><text class="content">后台统一整理订单、站点和物流时间，手机负责短信匹配、确认与显示</text></view>
+          <view class="update-item"><text class="tag optimize">效率</text><text class="content">扫描短信独立执行；物流详情展开时加载，未变化的订单不重复传输</text></view>
+          <view class="update-item"><text class="tag feature">备份</text><text class="content">升级前自动备份后台和手机已有数据，保留历史记录与离线确认</text></view>
+        </view>
+      </view>
+      <view class="version-item sf-surface">
         <view class="version-header"><text class="version-name">v3.1.52 · 私人版</text><text class="version-date">2026-11-12</text></view>
         <view class="update-list">
           <view class="update-item"><text class="tag fix">站点</text><text class="content">门店卡位不再混入子位置，柜号单独保留，兼容旧建议并维持位置冲突保护</text></view>

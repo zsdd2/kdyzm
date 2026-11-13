@@ -16,14 +16,14 @@
         <button v-if="cabinet" class="cabinet-box" role="button" tabindex="0" :aria-label="'复制柜号 ' + cabinet" @click="copy(cabinet)"><view class="box-label"><text>柜号</text><svg class="box-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="4" y="2" width="16" height="20" rx="3" /><path d="M12 2v20M4 12h16M8 6v3m8 6v3" /></svg></view><text class="cabinet-number"><template v-if="cabinetNumber"><text class="cabinet-digit">{{ cabinetNumber }}</text>号柜</template><template v-else>{{ cabinet }}</template></text></button>
       </view>
     </view>
-    <view class="station-row"><uni-icons class="station-icon" type="location" size="21" color="#008d80" /><text class="station-name">{{ stationDisplayName(pickup || shipment, '站点待获取') }}</text><view v-if="$slots['station-action']" class="station-action"><slot name="station-action" /></view></view>
+    <view class="station-row"><uni-icons class="station-icon" type="location" size="21" color="#008d80" /><text class="station-name">{{ stationText }}</text><view v-if="$slots['station-action']" class="station-action"><slot name="station-action" /></view></view>
     <view class="journey-section"><text class="section-title">订单信息</text><ParcelJourney :key="shipment.id || order.id || pickup?.id" :journey="journey" /></view>
 
     <view class="fold-card">
-      <button class="fold-heading" role="button" tabindex="0" :aria-expanded="logisticsOpen" @click="logisticsOpen = !logisticsOpen"><svg class="section-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M2 5h12v13H2zM14 10h5l3 4v4h-8" /><circle cx="6" cy="18" r="2" fill="#f7faff" /><circle cx="18" cy="18" r="2" fill="#f7faff" /></svg><text>物流详情</text><view class="fold-action">{{ (shipment.logisticsEvents || []).length }}条轨迹 <uni-icons :type="logisticsOpen ? 'top' : 'bottom'" size="15" color="#1874d4" /></view></button>
-      <view class="latest-row"><text class="carrier-state">{{ shipment.carrier || '快递' }} · {{ logisticsStatus }}</text><text class="latest-time">{{ time(latest?.time) }}</text></view>
-      <PhoneText class="latest-copy" :text="latest?.description || latest?.message || latest?.location || (shipment.waybillNo ? '物流轨迹待同步' : '暂无运单信息')" />
-      <LogisticsTimeline v-if="logisticsOpen" :shipment="shipment" expanded-only />
+      <button class="fold-heading" role="button" tabindex="0" :aria-expanded="logisticsOpen" @click="logisticsOpen = !logisticsOpen"><svg class="section-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M2 5h12v13H2zM14 10h5l3 4v4h-8" /><circle cx="6" cy="18" r="2" fill="#f7faff" /><circle cx="18" cy="18" r="2" fill="#f7faff" /></svg><text>物流详情</text><view class="fold-action">{{ (displayShipment.logisticsEvents || []).length }}条轨迹 <uni-icons :type="logisticsOpen ? 'top' : 'bottom'" size="15" color="#1874d4" /></view></button>
+      <view class="latest-row"><text class="carrier-state">{{ displayShipment.carrier || '快递' }} · {{ logisticsStatus }}</text><text class="latest-time">{{ latestTimeText }}</text></view>
+      <PhoneText class="latest-copy" :text="latest?.description || latest?.message || latest?.location || (displayShipment.waybillNo ? '物流轨迹待同步' : '暂无运单信息')" />
+      <LogisticsTimeline v-if="logisticsOpen" :shipment="displayShipment" :loading="detailsLoading" :error="detailsError" expanded-only @load="loadDetails" @retry="retryDetails" />
     </view>
     <view class="fold-card basic-card">
       <button class="fold-heading" role="button" tabindex="0" :aria-expanded="basicOpen" @click="basicOpen = !basicOpen"><uni-icons type="list" size="22" color="#587189" /><text>订单基本信息</text><uni-icons class="fold-chevron" :type="basicOpen ? 'top' : 'bottom'" size="17" color="#587189" /></button>
@@ -38,38 +38,146 @@ import ParcelJourney from '@/components/ParcelJourney.vue';
 import LogisticsTimeline from '@/components/LogisticsTimeline.vue';
 import PhoneText from '@/components/PhoneText.vue';
 import { courierPhones } from '@/services/logistics-contacts.js';
+import { loadShipmentDetails } from '@/services/assistant.js';
 import { parcelJourney } from '@/services/parcel-journey.js';
 import { pickupCabinet, stationDisplayName } from '@/services/station-presentation.js';
 export default {
   components: { ParcelJourney, LogisticsTimeline, PhoneText },
   props: { order: { type: Object, default: () => ({}) }, shipment: { type: Object, default: () => ({}) }, pickup: Object, status: { type: String, default: '待取件' }, sources: { type: Array, default: () => [] } },
-  data: () => ({ fullTitle: false, smsOpen: false, logisticsOpen: false, basicOpen: false }),
-  watch: { 'order.id'() { this.reset(); }, 'shipment.id'() { this.logisticsOpen = false; this.smsOpen = false; } },
+  data: () => ({ fullTitle: false, smsOpen: false, logisticsOpen: false, basicOpen: false, detailsLoading: false, detailsError: '', detailsRequestedFor: '', loadedDetails: null, detailsRequestId: 0, detailsInvalidated: false }),
+  watch: {
+    'order.id'() { this.reset(); },
+    'shipment.id'() { this.smsOpen = false; this.resetDetails(); },
+    shipmentEvidenceToken() { this.resetDetails(); },
+    shipmentBindingToken() { this.resetDetails(); },
+  },
   computed: {
     displayTitle() { const value = Array.from(this.order.title || '未关联订单'); return this.fullTitle || value.length <= 15 ? value.join('') : value.slice(0, 15).join('') + '…'; },
     platform() { return ({ taobao: '淘宝', pdd: '拼多多', jd: '京东', douyin: '抖音' })[this.order.platform] || this.order.platform || (this.order.source === 'manual' ? '手动记录' : '未关联订单'); },
-    code() { return String(this.pickup?.code || this.shipment.displayPickupCode || ''); },
+    shipmentEvidenceKey() { return this.detailEvidenceKey(this.shipment); },
+    shipmentEvidenceToken() {
+      const shipment = this.shipment || {};
+      return shipment.evidenceKey ?? '';
+    },
+    shipmentBindingToken() {
+      const shipment = this.shipment || {};
+      return JSON.stringify([shipment.canLoadDetails, shipment.detailBindingKey || '']);
+    },
+    detailsRequestKey() { return JSON.stringify([this.shipment.id || '', this.shipmentEvidenceKey, this.shipmentBindingToken]); },
+    displayShipment() {
+      const loaded = this.loadedDetails;
+      return loaded && loaded.id === this.shipment.id && this.detailCacheMatchesShipment(loaded)
+        ? { ...this.shipment, ...loaded.fields }
+        : this.shipment;
+    },
+    platformView() { return this.displayShipment.platformView || {}; },
+    fieldQuality() { return this.displayShipment.fieldQuality || this.platformView.quality || {}; },
+    code() { return String(this.pickup?.code || this.displayShipment.displayPickupCode || ''); },
     codeSize() { return this.code.length > 12 ? 'extended' : this.code.length > 10 ? 'long' : this.code.length > 8 ? 'compact' : ''; },
-    cabinet() { return pickupCabinet(this.pickup || this.shipment); },
+    cabinet() { return pickupCabinet(this.pickup || this.displayShipment); },
     cabinetNumber() { return /^(\d+)号柜$/.exec(this.cabinet)?.[1] || ''; },
-    journey() { return parcelJourney(this.shipment, this.order); },
+    journey() { return parcelJourney(this.displayShipment, this.order); },
+    stationText() {
+      const station = this.platformView.station || {};
+      const correctedName = stationDisplayName(this.pickup || this.displayShipment, '');
+      const name = correctedName || station.displayName || station.name || this.platformView.stationDisplayName || this.displayShipment.stationDisplayName || this.displayShipment.stationCanonical || '站点待获取';
+      return station.conflict ? name + '（站点待核对）' : name;
+    },
     basicFields() {
       const value = input => String(input ?? '').trim() || '未知';
       return [{ label: '订单号', value: value(this.order.platformOrderId) },
-        { label: '运单号', value: value(this.shipment.waybillNo || (!this.shipment.id ? this.order.waybillNo : '')) },
+        { label: '运单号', value: value(this.displayShipment.waybillNo || (!this.displayShipment.id ? this.order.waybillNo : '')) },
         { label: '平台名称', value: value(this.order.platform ? this.platform : '') },
         { label: '订单状态', value: value(this.order.orderStatus || this.order.tradeStatus) },
-        { label: '快递名称', value: value(this.shipment.carrier) },
-        { label: '派送员电话', value: courierPhones(this.shipment).map(contact => contact.text).join('、') || '未提供', phone: true }];
+        { label: '快递名称', value: value(this.displayShipment.carrier) },
+        { label: '派送员电话', value: this.courierContacts.map(contact => contact.text).join('、') || '未提供', phone: true }];
     },
-    latest() { return (this.shipment.logisticsEvents || []).slice().sort((a, b) => Number(b.time || 0) - Number(a.time || 0))[0]; },
-    logisticsStatus() { if (this.shipment.picked) return this.shipment.isHomeDelivery ? '已签收' : '已取件'; return ({ arrived: '已到站', awaiting_code: '已到站', transit: '运输中', signed: '已签收', returning: '退回中', returned: '已退回' })[this.shipment.status] || this.status; }
+    courierContacts() {
+      const contacts = this.platformView.courierPhones || this.displayShipment.courierPhones;
+      return Array.isArray(contacts) ? contacts.filter(contact => contact?.phone || contact?.text).map(contact => ({ phone: contact.phone || contact.text, text: contact.text || contact.phone })) : courierPhones(this.displayShipment);
+    },
+    latest() { return (this.displayShipment.logisticsEvents || []).slice().sort((a, b) => Number(b.time || 0) - Number(a.time || 0))[0]; },
+    latestTimeText() {
+      const latest = this.latest, state = this.platformView.status || this.displayShipment.status, time = latest?.time || (state === 'arrived' || state === 'awaiting_code' ? this.displayShipment.arrivalAt : 0);
+      if (time && (!this.fieldQuality.arrivalTime || this.fieldQuality.arrivalTime.state === 'known')) return this.time(time);
+      return (state === 'arrived' || state === 'awaiting_code') ? '到站时间待核对' : latest ? '时间待核对' : '';
+    },
+    logisticsStatus() { const state = this.platformView.status || this.displayShipment.status; if (this.displayShipment.picked) return this.displayShipment.isHomeDelivery ? '已签收' : '已取件'; return ({ arrived: '已到站', awaiting_code: '已到站', transit: '运输中', signed: '已签收', returning: '退回中', returned: '已退回' })[state] || this.status; }
   },
   methods: {
     stationDisplayName,
-    reset() { this.fullTitle = this.smsOpen = this.logisticsOpen = this.basicOpen = false; },
+    detailEvidenceKey(value) { return value?.evidenceKey ?? ''; },
+    detailBindingKey(value) { return value?.detailBindingKey ?? ''; },
+    detailCacheMatchesShipment(cache) {
+      if (cache.evidenceKey !== this.shipmentEvidenceKey) return false;
+      const currentBinding = this.detailBindingKey(this.shipment);
+      return !currentBinding || !cache.detailBindingKey || currentBinding === cache.detailBindingKey;
+    },
+    detailMatchesShipment(detail) {
+      if (this.detailEvidenceKey(detail) !== this.shipmentEvidenceKey) return false;
+      const currentBinding = this.detailBindingKey(this.shipment);
+      const detailBinding = this.detailBindingKey(detail);
+      return !currentBinding || !detailBinding || currentBinding === detailBinding;
+    },
+    cacheDetails(detail, id, fields = {}) {
+      this.loadedDetails = {
+        id,
+        evidenceKey: this.detailEvidenceKey(detail) || this.shipmentEvidenceKey,
+        detailBindingKey: this.detailBindingKey(detail) || this.detailBindingKey(this.shipment),
+        fields,
+      };
+      this.detailsInvalidated = false;
+    },
+    resetDetails() {
+      this.logisticsOpen = false;
+      this.detailsRequestId++;
+      this.detailsLoading = false;
+      this.detailsError = '';
+      this.detailsRequestedFor = '';
+      this.loadedDetails = null;
+      this.detailsInvalidated = true;
+    },
+    reset() { this.fullTitle = this.smsOpen = this.logisticsOpen = this.basicOpen = false; this.resetDetails(); },
     copy(value) { if (value) uni.setClipboardData({ data: String(value) }); },
-    time(value) { if (!Number(value)) return ''; const date = new Date(Number(value)); if (Number.isNaN(date.getTime())) return ''; return date.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }); }
+    time(value) { if (!Number(value)) return ''; const date = new Date(Number(value)); if (Number.isNaN(date.getTime())) return ''; return date.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }); },
+    findShipment(snapshot, id) {
+      return snapshot?.shipment?.id === id ? snapshot.shipment
+        : snapshot?.shipments?.find(shipment => shipment?.id === id)
+        || snapshot?.packages?.flatMap(order => order?.shipments || []).find(shipment => shipment?.id === id)
+        || null;
+    },
+    async loadDetails({ retry = false } = {}) {
+      const id = this.shipment.id;
+      const requestKey = this.detailsRequestKey;
+      if (!id || this.shipment.canLoadDetails === false || this.detailsLoading || (!retry && this.detailsRequestedFor === requestKey)) return;
+      if (!retry && !this.detailsInvalidated && (['loaded', 'ready'].includes(this.displayShipment.detailState) || ['loaded', 'ready'].includes(this.displayShipment.publicShipment?.detailState))) return;
+      if (retry) this.detailsRequestedFor = '';
+      if (typeof loadShipmentDetails !== 'function') return;
+      const requestId = ++this.detailsRequestId;
+      this.detailsRequestedFor = requestKey; this.detailsLoading = true; this.detailsError = '';
+      try {
+        const snapshot = await loadShipmentDetails(id);
+        const detail = this.findShipment(snapshot, id);
+        if (requestId !== this.detailsRequestId || this.shipment.id !== id) return;
+        if (detail && this.detailMatchesShipment(detail)) {
+          const fields = {};
+          for (const key of ['detailState', 'logisticsEvents', 'logisticsState', 'logisticsTruncated', 'logisticsError', 'logisticsCheckedAt', 'logisticsUpdatedAt']) {
+            if (Object.prototype.hasOwnProperty.call(detail, key)) fields[key] = detail[key];
+          }
+          this.cacheDetails(detail, id, fields);
+        } else if (!this.shipmentEvidenceKey && ['loaded', 'ready'].includes(snapshot?.detailState)) {
+          this.cacheDetails({}, id, { detailState: snapshot.detailState });
+        } else {
+          this.detailsInvalidated = true;
+          this.detailsRequestedFor = '';
+        }
+      } catch (error) {
+        if (requestId === this.detailsRequestId && this.shipment.id === id) this.detailsError = error.message || '物流详情加载失败';
+      } finally {
+        if (requestId === this.detailsRequestId && this.shipment.id === id) this.detailsLoading = false;
+      }
+    },
+    retryDetails() { return this.loadDetails({ retry: true }); }
   }
 };
 </script>

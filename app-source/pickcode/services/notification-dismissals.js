@@ -10,7 +10,7 @@ export function notificationScope(snapshot) {
 export function notificationVersion(notice) {
   const shipment = notice.receipt?.shipment, item = notice.item;
   return JSON.stringify([notice.kind, notice.title, notice.body, notice.time || 0, notice.progress || null,
-    shipment ? [shipment.status, shipment.pickupCycle?.id, shipment.logisticsEvents?.[0]] : null,
+    shipment ? [shipment.status, shipment.pickupCycle?.id, shipment.evidenceKey || shipment.platformView?.evidenceKey || shipment.logisticsEvents?.[0]] : null,
     notice.reminder ? [notice.reminder.date, notice.reminder.kind, notice.reminder.body] : null,
     item ? [item.pendingCount, item.unassignedPickedCount, item.conflicts, (item.sources || []).map(source => [source.sourceId,
       source.matchNeedsReview, source.linkedShipmentIds, (source.matchCandidates || []).map(candidate => [candidate.shipmentId, candidate.kind, candidate.decisionReason]).sort()]).sort()] : null,

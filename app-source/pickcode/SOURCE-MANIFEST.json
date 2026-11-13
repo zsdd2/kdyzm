@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "version": "3.1.52",
+  "version": "3.2.0",
   "upstreamRepository": "https://github.com/SongZX0106/PickCode",
   "upstreamCommit": "07f9fed59122d7f2210a825aadedc2a913a83176",
   "note": "Production source snapshot with authorized downstream modifications; no private data or workflow history.",
@@ -39,6 +39,7 @@
     "android/gradlew.bat",
     "android/build.ps1",
     "server/src/logistics-rules.js",
+    "server/src/logistics-contacts.js",
     "scripts/uni-build.mjs",
     "scripts/sync-android.mjs",
     "scripts/verify.mjs",
@@ -62,7 +63,7 @@
       "reason": "Unused upstream image barrel with a stale relative import."
     }
   ],
-  "localImportChecks": 179,
+  "localImportChecks": 180,
   "files": [
     {
       "path": ".semgrep.yml",
@@ -81,8 +82,8 @@
     },
     {
       "path": "android/app/build.gradle",
-      "size": 3562,
-      "sha256": "d4e05672ea0a5d4d633d645e9a64de0f9da3b7b4e484a129c40ef8cc8d4f3e24"
+      "size": 3561,
+      "sha256": "d3f0ee2fb196f7b9314234c0995cd6d7ffea9ff96e29507835f73882d566af08"
     },
     {
       "path": "android/app/src/main/AndroidManifest.xml",
@@ -111,8 +112,8 @@
     },
     {
       "path": "android/app/src/main/java/local/pickcode/assistant/AssistantStore.java",
-      "size": 9258,
-      "sha256": "a937d5ee8f8aef76d96be4103a50ec1ee7c43265f5af3fbb09bae1a2ef5cc75f"
+      "size": 13211,
+      "sha256": "0d23bbbdf60705e8873bd5ff2558e9a7c7be44425baf510c6e1ce07960683f5c"
     },
     {
       "path": "android/app/src/main/java/local/pickcode/assistant/BackendRoutes.java",
@@ -141,13 +142,13 @@
     },
     {
       "path": "android/app/src/main/java/local/pickcode/assistant/MainActivity.java",
-      "size": 44038,
-      "sha256": "15e11af19ae70e5c78ea8efba612624a7e8eccbeceedc788d7e69ef3e1978d64"
+      "size": 44197,
+      "sha256": "229991ada37cd373051de2b16d9e118eb2f647081d79b7877a312dfe75ecc686"
     },
     {
       "path": "android/app/src/main/java/local/pickcode/assistant/OnlineClient.java",
-      "size": 11844,
-      "sha256": "566b9305698e2fcc5a685370941022f32cbb9fbd072a0e60e68fedf3131471d8"
+      "size": 12129,
+      "sha256": "a27eee3d7ee9c321f01d7d01ebcb3a6f6076c833b20c9a754b10b02974370bdd"
     },
     {
       "path": "android/app/src/main/java/local/pickcode/assistant/OnlineEndpoint.java",
@@ -156,8 +157,8 @@
     },
     {
       "path": "android/app/src/main/java/local/pickcode/assistant/OnlineSyncManager.java",
-      "size": 88460,
-      "sha256": "4c53d5bdfa8ddfe6be1546b353907cb836844ebbbb19262b53f980c0d4b827af"
+      "size": 91646,
+      "sha256": "1400e6745b7b8e1894c94c7665095a0011799181255335eeba0a383e7119d993"
     },
     {
       "path": "android/app/src/main/java/local/pickcode/assistant/OnlineSyncScheduler.java",
@@ -236,8 +237,8 @@
     },
     {
       "path": "android/app/src/main/java/local/pickcode/assistant/WidgetModel.java",
-      "size": 30202,
-      "sha256": "25d580cf6fd2b0d162d690ea5b42a83e1990dcc14e7de2351469e7709556f405"
+      "size": 30448,
+      "sha256": "cff1620456cca19d7f4ac316e2f6984e0424c9caf61bd199a30f15b12eb485de"
     },
     {
       "path": "android/app/src/main/java/local/pickcode/assistant/WidgetRenderer.java",
@@ -501,13 +502,13 @@
     },
     {
       "path": "components/LogisticsTimeline.vue",
-      "size": 4773,
-      "sha256": "f1a64e8edf2bf253cfcad460467e06b864382fe00568825ffea57416208e0d65"
+      "size": 5574,
+      "sha256": "76165ceae355e66efdbeae97b5a8cc19f00e4110445f38b3619197ead83a68b9"
     },
     {
       "path": "components/OrderOverview.vue",
-      "size": 14096,
-      "sha256": "7ed1b2c1ab9153bc56060f0be01d896708618629926616f25b36902c457dedd1"
+      "size": 20615,
+      "sha256": "e63525514f0cc339bdd20aaa7f0f3e61e73db3edf7b35b68168db22793b81d78"
     },
     {
       "path": "components/ParcelJourney.vue",
@@ -546,13 +547,13 @@
     },
     {
       "path": "core/package-presentation.js",
-      "size": 9352,
-      "sha256": "074ba1e14d499bc3e9661a6487557cf5d26547faf06a969de14112924de81bee"
+      "size": 9459,
+      "sha256": "0c9d5acb868ca4658bc4e7ab3b1f3b9f678e2c02deb9d7dfff722bcd2ff84aec"
     },
     {
       "path": "core/pickcode-core.js",
-      "size": 180249,
-      "sha256": "2073c6b76f896ea6da6606c82c2d143c7f25d366f436087c9bc4cbaffd087813"
+      "size": 188973,
+      "sha256": "c2c388bbce40f05e29f09bb31889db3dfc77ccabb79952ba0eaf2b3d1f9c7226"
     },
     {
       "path": "index.html",
@@ -571,18 +572,18 @@
     },
     {
       "path": "manifest.json",
-      "size": 3242,
-      "sha256": "fca917b74aded72ed7d4a5ad0179444e4848b6e0f5d9c5d68d06c0e49164f05a"
+      "size": 3241,
+      "sha256": "2c5708dbb48a95568814e36b1d72280b897b427e8ee175e76a6386d4a5c05ee9"
     },
     {
       "path": "package-lock.json",
-      "size": 256609,
-      "sha256": "8b809b6722088f8b6fcec4792d9ae4676bb5b59e06a3a3de42b76d02876f6e2a"
+      "size": 256607,
+      "sha256": "27ea87e51ac33347713b800052b4080f24ec64e5521d9388619bde6eba5b358a"
     },
     {
       "path": "package.json",
-      "size": 1728,
-      "sha256": "6a760c34be739f76eafd1eb7b0622e41a60a5a7de683263ca8ece14651ba51b9"
+      "size": 1727,
+      "sha256": "5f9b3bc8a3cdab9121d1349795066454a77a5d3d0c2bc88bff7ce5da2c97b086"
     },
     {
       "path": "pages.json",
@@ -596,8 +597,8 @@
     },
     {
       "path": "pages/index/index.vue",
-      "size": 79637,
-      "sha256": "3c34ce3997d2b1ae2e97fc8b386c6da549cbe45459b098918253394a82e83a69"
+      "size": 79321,
+      "sha256": "cca9d4c6290859633dc65d2d60292ad5045f48ed4f07811c0715fc8226058396"
     },
     {
       "path": "pages/my/about.vue",
@@ -611,8 +612,8 @@
     },
     {
       "path": "pages/my/changelog.vue",
-      "size": 49743,
-      "sha256": "b601a09f506e5f6ec58cacc94811b0bbbf45e9a54ff6a3670ed9c639ba730449"
+      "size": 50613,
+      "sha256": "78240b39eef3c34d94907bff2b9a6d58f3d26d62ba2b1b3ed9508286b1eda489"
     },
     {
       "path": "pages/my/faq.vue",
@@ -631,8 +632,8 @@
     },
     {
       "path": "pages/my/logistics-rules.vue",
-      "size": 13581,
-      "sha256": "38e75342d8193248517c4317e1a283e0f76bee95740289a73b61b5faf9bb7abc"
+      "size": 13629,
+      "sha256": "27f5e015b324195e08842a414b21ca5002fa63ecbe955d07a757804120a2c20d"
     },
     {
       "path": "pages/my/match-rules.vue",
@@ -656,8 +657,8 @@
     },
     {
       "path": "pages/packages/index.vue",
-      "size": 78669,
-      "sha256": "7bfa218ab28b1d92054240d595c2557a3a1969b3d9faff6fd282a3697b7647b3"
+      "size": 78984,
+      "sha256": "7c931e9666970464bc6f79a220e7ecde79354f8eda5d60f8c01396a512c350b5"
     },
     {
       "path": "scripts/ai-context.mjs",
@@ -720,6 +721,11 @@
       "sha256": "a7265873925e40fb955561ee0a32f533a849907945f747d55978e006f78767aa"
     },
     {
+      "path": "server/src/logistics-contacts.js",
+      "size": 5606,
+      "sha256": "0e907c95a1e947f1e0a36bb1e124742490fac8b920d1b76506020c466b52c1cf"
+    },
+    {
       "path": "server/src/logistics-rules.js",
       "size": 29049,
       "sha256": "201f960f2f194365338386efefd60d5bb0b5e9a384f1682bf4410b20286583ed"
@@ -731,8 +737,8 @@
     },
     {
       "path": "services/assistant.js",
-      "size": 41705,
-      "sha256": "d64feedb0f3e9be1df8b642fc6ee1e1823dc413b57dab0c05e896aac1e3d4151"
+      "size": 44503,
+      "sha256": "e2fc98412f6053f21d107ea66ebfa71eb943294edfad6ce3dbc661a6681535c4"
     },
     {
       "path": "services/item-patch.js",
@@ -741,13 +747,13 @@
     },
     {
       "path": "services/logistics-contacts.js",
-      "size": 5017,
-      "sha256": "d56d5218c290a3054ab7a7250dc73f665b40f580a4658c4fa0db6df224076012"
+      "size": 101,
+      "sha256": "ca45bfc20adbd327a8116d11a5f020db4400371c2f2bcc14462742220e246f1d"
     },
     {
       "path": "services/notification-dismissals.js",
-      "size": 2190,
-      "sha256": "9860ad642f08fb46d1ad7cf561fe1cf4eacbbeef4c07f89005a226e43ae25620"
+      "size": 2252,
+      "sha256": "cd4f13c3155ff01e0c0fb05ad0668b52f98f1a320e4b21ad2920f1d8250186ac"
     },
     {
       "path": "services/pairing-scan.js",
@@ -2618,8 +2624,8 @@
     },
     {
       "path": "README.md",
-      "size": 2055,
-      "sha256": "8e713491d7a8f8e8001a9aefc0bd01ad303ebe669379bb83357e7622edb8efdf"
+      "size": 2054,
+      "sha256": "59e430d19d783426306bbba27e025addcbabc5cac1764201058ac6b079ecb385"
     },
     {
       "path": ".gitignore",

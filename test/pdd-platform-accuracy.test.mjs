@@ -5,9 +5,10 @@ import { createCollector, pddParcels, timestamp } from '../src/collectors.mjs';
 import { pddShippingEvents } from '../src/collector-enrichment.mjs';
 import { detectPickupCompletion } from '../src/pickup-completion.mjs';
 import { Store } from '../src/store.mjs';
+import { shipmentDetails } from '../src/client-snapshot.mjs';
 
-await import(new URL(existsSync(new URL('../../core/load-core.mjs', import.meta.url))
-  ? '../../core/load-core.mjs' : '../app-source/pickcode/core/load-core.mjs', import.meta.url));
+await import(new URL(existsSync(new URL('../app-source/pickcode/core/load-core.mjs', import.meta.url))
+  ? '../app-source/pickcode/core/load-core.mjs' : '../app-source/pickcode/core/load-core.mjs', import.meta.url));
 
 const NOW = Date.parse('2026-11-09T12:00:00+08:00');
 const ORDER = 'SYNTHETIC-PDD-ACCURACY', WAYBILL = 'SYNTHETIC-PDD-A';
@@ -114,9 +115,9 @@ for (const reverse of [false, true]) test(`PDD refresh preserves a cached same-t
 });
 
 test('App core retains conflicting provider evidence from a valid server snapshot', t => {
-  const f = fixture(t); f.sync([]);
-  const snapshot = f.snapshot();
-  snapshot.shipments[0].logisticsEvents = conflictEvents();
+  const f = fixture(t), device = { accountIds: ['pdd-accuracy'], legacyAccountIds: ['pdd-accuracy'], familyIds: [] };
+  f.sync(conflictEvents());
+  const snapshot = f.store.snapshot(['pdd-accuracy'], undefined, 0, false);
   let state = '';
   const dispatch = (action, payload = {}) => {
     const result = JSON.parse(globalThis.PickCodeCore.dispatch(state, JSON.stringify({ action, payload })));
@@ -125,12 +126,19 @@ test('App core retains conflicting provider evidence from a valid server snapsho
   dispatch('syncMeta', { bound: true, baseUrl: 'https://fixture.example', deviceId: 'fixture', accounts: snapshot.accounts });
   const view = dispatch('syncImport', { snapshot, syncedAt: NOW });
   const parcel = view.packages.flatMap(order => order.shipments).find(item => item.waybillNo === WAYBILL);
-  assert.equal(parcel.picked, false);
-  assert.deepEqual(parcel.logisticsEvents.map(event => event.providerStatus).sort(), ['IN_CABINET', 'OUT_CABINET']);
+  const target = dispatch('shipmentDetailTarget', { id: parcel.id });
+  const detail = shipmentDetails(f.store, device, target.remoteId);
+  dispatch('importShipmentDetails', { ...detail, id: target.id, bindingKey: target.bindingKey });
+  const detailed = dispatch('snapshot').packages.flatMap(order => order.shipments).find(item => item.waybillNo === WAYBILL);
+  assert.equal(detailed.picked, false);
+  assert.deepEqual(detailed.logisticsEvents.map(event => event.providerStatus).sort(), ['IN_CABINET', 'OUT_CABINET']);
   assert.equal(view.operations.length, 0);
-  snapshot.shipments[0].logisticsEvents = [...Array.from({ length: 99 }, (_, i) => ({ time: NOW - i - 1, description: '合成信息更新' + i })), ...conflictEvents()];
-  snapshot.serverRevision++;
-  const bounded = dispatch('syncImport', { snapshot, syncedAt: NOW }).packages.flatMap(order => order.shipments).find(item => item.waybillNo === WAYBILL).logisticsEvents;
+  f.sync([...Array.from({ length: 99 }, (_, i) => ({ time: NOW - i - 1, description: '合成信息更新' + i })), ...conflictEvents()]);
+  const updated = f.store.snapshot(['pdd-accuracy'], undefined, 0, false);
+  const refreshed = dispatch('syncImport', { snapshot: updated, syncedAt: NOW }).packages.flatMap(order => order.shipments).find(item => item.waybillNo === WAYBILL);
+  const refreshedTarget = dispatch('shipmentDetailTarget', { id: refreshed.id });
+  const refreshedDetail = shipmentDetails(f.store, device, refreshedTarget.remoteId);
+  const bounded = dispatch('importShipmentDetails', { ...refreshedDetail, id: refreshedTarget.id, bindingKey: refreshedTarget.bindingKey }).packages.flatMap(order => order.shipments).find(item => item.waybillNo === WAYBILL).logisticsEvents;
   assert.ok(bounded.length <= 100);
   assert.deepEqual(bounded.filter(e => e.description === out.info).map(e => e.providerStatus).sort(), ['IN_CABINET', 'OUT_CABINET']);
 });

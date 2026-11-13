@@ -18,6 +18,7 @@ import { RecognitionAi } from './recognition-ai.mjs';
 import { createRecognitionApi } from './recognition-api.mjs';
 import { DiagnosticAccess } from './diagnostic-access.mjs';
 import { createDiagnosticApi } from './diagnostic-api.mjs';
+import { clientSnapshot, shipmentDetails } from './client-snapshot.mjs';
 import { stationKey } from './station-text.mjs';
 import { PickupCompletionAi } from './pickup-completion-ai.mjs';
 import { serverVersion } from './version.mjs';
@@ -54,6 +55,7 @@ export function createService({ filename = ':memory:', encryptionKey, adminToken
   const store = new Store({ filename, key: configuration.key, now, getLogisticsRules });
   logisticsRules = new LogisticsRuleStore(store.db, now, { onRulesChanged: rules => store.refreshLogisticsRules(rules) });
   const stations = new StationStore({ db: store.db, key: configuration.key, now, onRulesChanged: catalog => store.refreshStationRecognition(catalog) });
+  store.getStationRules = () => stations.stationRules();
   const matchingFeedback = new MatchingFeedbackStore({ store, stations, now });
   let jobs, recognitionAi;
   const recognition = new RecognitionWorkflow({ store, now, automaticEvents: scheduler,
@@ -97,8 +99,7 @@ export function createService({ filename = ':memory:', encryptionKey, adminToken
   recognition.observe(store.snapshot(store.accounts().filter(account => account.enabled).map(account => account.id)));
   const rate = new RateLimiter(now);
   jobs = createSyncJobs({ store, collector: collector || createCollector({ now, getLogisticsRules }), now,
-    onImported: (accountId, shipmentIds) => enrichCandidates([accountId], shipmentIds),
-    onCompleted: () => store.refreshStationRecognition(stations.stationRules().stations) });
+    onImported: (accountId, shipmentIds) => enrichCandidates([accountId], shipmentIds) });
   const running = jobs.running;
   const allowed = (device, id) => { if (!device.accountIds.includes(id)) fail(403, 'SCOPE_FORBIDDEN', '账号不在授权范围内'); };
   const admin = req => {
@@ -450,7 +451,6 @@ export function createService({ filename = ':memory:', encryptionKey, adminToken
       if (path === '/v1/accounts/sync' && req.method === 'POST') {
         const body = await bodyOf(req); onlyKeys(body, ['onlyIfStale']);
         if (body.onlyIfStale !== undefined && typeof body.onlyIfStale !== 'boolean') fail(400, 'INVALID_INPUT', 'onlyIfStale 必须是布尔值');
-        store.refreshStationRecognition(stations.stationRules().stations);
         send(res, 202, { accepted: true, jobs: device(req).accountIds.map(id => jobs.request(id, '', { onlyIfStale: body.onlyIfStale === true }))
           .filter(Boolean).map(record => record.job) }); return;
       }
@@ -483,11 +483,16 @@ export function createService({ filename = ':memory:', encryptionKey, adminToken
           serverLogisticsRulesVersion: logistics.revision,
           serverLogisticsRules: logistics.rules.map(({ id, name, enabled, kind, starts, end, keywords, origin }) => ({ id, name, enabled, kind, starts, end, keywords, origin })),
           ...jobs.snapshot(current, requested.length ? requested : undefined) };
-        const snapshot = Object.assign(store.snapshot(current, requested.length ? requested : undefined, Buffer.byteLength(JSON.stringify(additional), 'utf8')), additional);
+        let snapshot = Object.assign(store.snapshot(current, requested.length ? requested : undefined, Buffer.byteLength(JSON.stringify(additional), 'utf8'), url.searchParams.get('view') !== 'compact'), additional);
         snapshot.capabilities = [...new Set([...(snapshot.capabilities || []), 'station_rule_receipts_v1', 'recognition_workflow_v1'])];
+        if (url.searchParams.get('view') === 'compact') snapshot = clientSnapshot(snapshot, url.searchParams.get('dataVersion') || '');
         const etag = `"${hash(JSON.stringify(snapshot))}"`;
         const matches = (req.headers['if-none-match'] || '').split(',').map(t => t.trim().replace(/^W\//, '')).includes(etag);
         send(res, matches ? 304 : 200, matches ? undefined : snapshot, { ETag: etag }); return;
+      }
+      const detailPath = path.match(/^\/v1\/shipments\/([^/]+)\/logistics$/);
+      if (detailPath && req.method === 'GET') {
+        send(res, 200, shipmentDetails(store, current, detailPath[1])); return;
       }
       if (path === '/v1/operations' && req.method === 'POST') {
         const body = await bodyOf(req); onlyKeys(body, ['operations']);
