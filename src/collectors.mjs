@@ -4,6 +4,7 @@
 import { createHash } from 'node:crypto';
 import { normalizeProductImageUrl } from './product-image.mjs';
 import { discoverPddSplit, fetchPddSplitTrack, fetchPddSplitCabinet, pddOrderMatches, pddWaybillMatches } from './pdd-split.mjs';
+import { normalizeTaobaoPickupCode } from './taobao-pickup-code.mjs';
 import { activeKnownOrders, activeKnownParcels, isActiveKnownOrder, anchorTaobaoEventTimes, corroborateTaobaoEventTimes, doorstepEvidence, eventStatus, homeDeliveryCompleted, logisticsEventTimeIssue, logisticsTimestamp, logisticsTimePrecision, normalizeLogisticsEvents, orderTimePrecision, pddShippingEvents, pickupCycleReset, pickupEvidence, taobaoDetailDateEvidence, taobaoStageEvents, taobaoTimeAnchorCandidate, taobaoTransitEvents } from './collector-enrichment.mjs';
 import { jdShipmentStatus } from './shipment-lifecycle.mjs';
 
@@ -255,9 +256,9 @@ export function taobaoParcels(fields, platformOrderId, fallbackCode = '', rules,
     }), rules);
     const doorstep = doorstepEvidence(logisticsEvents, { carrier }, checkedAt);
     const evidence = doorstep.arrivalAt > pickup.arrivalAt ? doorstep : pickup;
-    return { platformOrderId, waybillNo: parcel.mailNo, carrier,
+    return normalizeTaobaoPickupCode({ platformOrderId, waybillNo: parcel.mailNo, carrier,
       pickupCode, ...evidence, status, logisticsEvents, logisticsTruncated,
-      logisticsState: logisticsEvents.length ? 'ok' : specific || selected === fields ? 'empty' : 'unavailable' };
+      logisticsState: logisticsEvents.length ? 'ok' : specific || selected === fields ? 'empty' : 'unavailable' });
   });
 }
 
@@ -478,9 +479,15 @@ async function collectTaobao(cookie, { fetchImpl, now, maxPages, knownOrders = [
         else orderUpdates.push(metadata);
       }
     }
-    const anchor = detailOrder();
+    const anchor = detailOrder() || [orders.find(order => order.platformOrderId === platformOrderId),
+      orderUpdates.find(order => order.platformOrderId === platformOrderId), known.get(platformOrderId)].find(order => order?.orderDate > 0);
     for (const parcel of parcels) {
-      parcel.logisticsEvents = anchorTaobaoEventTimes(parcel.logisticsEvents, anchor, checkedAt, fullTracks.get(parcel.waybillNo));
+      const previous = knownParcels(platformOrderId).find(item => item.waybillNo === parcel.waybillNo);
+      const observations = [known.get(platformOrderId)?.firstSeenAt, previous?.logisticsCheckedAt, previous?.logisticsDetailCheckedAt,
+        ...(previous?.logisticsEvents || []).filter(event => !logisticsEventTimeIssue(event, checkedAt)).map(event => event.time)]
+        .filter(time => Number.isSafeInteger(time) && time > 0 && time <= checkedAt);
+      parcel.logisticsEvents = anchorTaobaoEventTimes(parcel.logisticsEvents, anchor, checkedAt, fullTracks.get(parcel.waybillNo),
+        { observedAt: observations.length ? Math.min(...observations) : checkedAt, savedEvents: previous?.logisticsEvents || [] });
     }
     return { shipments: parcels, orderUpdates: updates, warnings, logisticsFailures };
   }

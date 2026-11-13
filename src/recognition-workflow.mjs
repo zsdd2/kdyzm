@@ -6,6 +6,8 @@ import { orderRetention } from './order-retention.mjs';
 
 const MINUTE = 60000, DAY = 86400000, OFFSET = 8 * 3600000;
 const TERMINAL = new Set(['resolved', 'ignored']);
+const REPORT_CODE_REASONS = new Set(['code_conflict', 'code_mismatch', 'code_station_conflict', 'code_cabinet_conflict',
+  'code_carrier_conflict', 'code_waybill_conflict', 'code_time_conflict', 'code_cycle_conflict']);
 const ACTIVE_LIMIT = 2000, HISTORY_LIMIT = 500, SCAN_LIMIT = 10000;
 const parse = row => row && JSON.parse(row.data);
 const dayKey = now => new Date(now + OFFSET - 3 * 3600000).toISOString().slice(0, 10);
@@ -84,19 +86,22 @@ export class RecognitionWorkflow {
     if (target === 'event_time') return hash(JSON.stringify([[...new Set(events.map(event => JSON.stringify(event)))].sort(), shipment.pickupCycle?.id]));
     return hash(JSON.stringify([events, shipment.status, shipment.logisticsState, shipment.arrivalAt, shipment.arrivalAtSource, shipment.arrivalAtPrecision, shipment.station, shipment.pickupCycle?.id]));
   }
-  reportFingerprint(source, shipments) {
+  reportFingerprint(source, shipments, reasonCodes = []) {
     const evidence = shipments.map(shipment => [shipment.id, this.fingerprint(shipment), shipment.carrier, shipment.pickupCode, shipment.waybillNo])
       .sort(([one], [two]) => one.localeCompare(two));
-    return hash(JSON.stringify([source, evidence]));
+    const reasons = [...new Set((Array.isArray(reasonCodes) ? reasonCodes : [])
+      .filter(reason => REPORT_CODE_REASONS.has(reason)))].sort();
+    return hash(JSON.stringify(reasons.length ? [source, evidence, reasons] : [source, evidence]));
   }
   scrubReportSources() {
     for (const task of this.tasks()) {
       if (!task.source || !task.source.waybillNo && !task.source.pickupCode) continue;
       const shipments = (task.candidateShipmentIds || []).map(id => this.store.shipment(id));
-      const unchanged = shipments.length && shipments.every(Boolean) && this.reportFingerprint(task.source, shipments) === task.sourceFingerprint;
+      const unchanged = shipments.length && shipments.every(Boolean)
+        && this.reportFingerprint(task.source, shipments, task.reasonCodes) === task.sourceFingerprint;
       task.source.waybillNo = ''; task.source.pickupCode = '';
       // The original hash is also the identity used by historical AI reviews and in-flight work.
-      if (unchanged) task.privacyFingerprint = this.reportFingerprint(task.source, shipments);
+      if (unchanged) task.privacyFingerprint = this.reportFingerprint(task.source, shipments, task.reasonCodes);
       this.db.prepare('UPDATE recognition_tasks SET data=? WHERE id=?').run(JSON.stringify(task), task.id);
     }
   }
@@ -199,7 +204,8 @@ export class RecognitionWorkflow {
     if (report.source.occurredAt != null && report.source.occurredAt !== 0 && !validTime(report.source.occurredAt, this.now() + 5 * MINUTE)) fail(400, 'INVALID_RECOGNITION_REPORT', '来源时间无效');
     source.occurredAt = report.source.occurredAt || null;
     source.waybillNo = ''; source.pickupCode = '';
-    const scope = scopes.find(scope => !scope.blocked) || scopes[0], fingerprint = this.reportFingerprint(source, scopes.map(({ shipment }) => shipment));
+    const scope = scopes.find(scope => !scope.blocked) || scopes[0],
+      fingerprint = this.reportFingerprint(source, scopes.map(({ shipment }) => shipment), report.reasonCodes);
     const changed = !!previous && (previous.privacyFingerprint || previous.sourceFingerprint) !== fingerprint;
     const fresh = !previous || changed;
     const previousState = previous?.reportState || (previous?.reasonCode === 'CLIENT_MATCH_CONFIRMED' ? 'resolved'

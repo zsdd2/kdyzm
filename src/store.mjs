@@ -4,7 +4,7 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { encryptCookie, decryptCookie, hash, secret, fail, text, onlyKeys } from './security.mjs';
 import { serverVersion, capabilities } from './version.mjs';
-import { corroborateTaobaoEventTimes, doorstepEvidence, genericPickupStation, pickupCycleReset, pickupEvidence, eventStatus, providerEventFields, mergeProviderEventFields, logisticsEventTimeIssue, logisticsTimePrecision } from './collector-enrichment.mjs';
+import { anchorTaobaoEventTimes, corroborateTaobaoEventTimes, doorstepEvidence, genericPickupStation, pickupCycleReset, pickupEvidence, eventStatus, providerEventFields, mergeProviderEventFields, logisticsEventDescriptionKey, logisticsEventTimeIssue, logisticsTimePrecision } from './collector-enrichment.mjs';
 import { PickupCompletionStore } from './pickup-completion-store.mjs';
 import { effectivePicked, pickupCompletionState } from './pickup-completion.mjs';
 import { normalizeRetentionFields, orderRetention, retainedSignedShipment, validRetentionDate } from './order-retention.mjs';
@@ -14,6 +14,7 @@ import { jdShipmentStatus, retainMilestoneEvents, shippingEvidence } from './shi
 import { normalizeProductImageUrl } from './product-image.mjs';
 import { prepareUpgradeBackup } from './upgrade-backup.mjs';
 import { ShipmentViewCache } from './shipment-view.mjs';
+import { normalizeTaobaoPickupCode } from './taobao-pickup-code.mjs';
 
 export const stableId = (...values) => hash(JSON.stringify(values)).slice(0, 32);
 const parse = row => row && JSON.parse(row.data);
@@ -38,7 +39,7 @@ function logisticsData(input, old = {}, reuseEvents = false, rules, now) {
     // A corroborated Taobao stage replaces its exact legacy undated copy, including pre-provider records.
     const dated = !e.time && datedTaobao.get(JSON.stringify([e.timeText, e.description, e.location]));
     if (dated && Object.entries(providerEventFields(e)).every(([key, value]) => dated[key] === value)) return false;
-    const key = JSON.stringify([e.time, e.time ? '' : e.timeText, e.description, e.location, logisticsEventTimeIssue(e, now) === 'timeConflict']);
+    const key = JSON.stringify([e.time, e.time ? '' : e.timeText, logisticsEventDescriptionKey(e), e.location, logisticsEventTimeIssue(e, now) === 'timeConflict']);
     if (!e.description) return false;
     const matches = seen.get(key) || [];
     if (matches.some(prior => mergeProviderEventFields(prior, e))) return false;
@@ -406,7 +407,24 @@ export class Store {
   account(id) { return this.accountFamily(parse(this.db.prepare('SELECT data FROM accounts WHERE id=?').get(id))); }
   order(id) { return parse(this.db.prepare('SELECT data FROM orders WHERE id=?').get(id)); }
   shipment(id) { return parse(this.db.prepare('SELECT data FROM shipments WHERE id=?').get(id)); }
+  normalizedShipment(shipment, order = this.order(shipment.orderId)) {
+    if (order?.platform !== 'taobao') return shipment;
+    const now = this.now(), rules = this.getLogisticsRules?.(), events = shipment.logisticsEvents || [];
+    // Old saved rows use their own observation clock and waybill evidence, never today's year or a sibling parcel.
+    const observedAt = Math.min(now, Math.max(validTime(shipment.logisticsCheckedAt), validTime(shipment.logisticsDetailCheckedAt)));
+    // Keep future/conflicting full dates as veto evidence; corroboration separately accepts only credible dates.
+    const fullTrack = events.filter(event => validTime(event.time) && logisticsTimePrecision(event.timeText) !== 'unknown');
+    const corroborated = corroborateTaobaoEventTimes(events, fullTrack.filter(event => !logisticsEventTimeIssue(event, observedAt)), observedAt,
+      { notBefore: order.orderDateOrigin === 'detail' ? order.orderDate || 0 : 0 });
+    const dated = anchorTaobaoEventTimes(corroborated, order, observedAt, fullTrack);
+    const normalized = logisticsData({ ...shipment, logisticsEvents: dated }, {}, false, rules, now).logisticsEvents;
+    const repairedTime = dated.some(event => event.time && events.some(previous => !previous.time
+      && previous.timeText === event.timeText && previous.description === event.description));
+    const pickup = repairedTime ? pickupData({}, shipment, normalized, rules, now, 'taobao') : {};
+    return normalizeTaobaoPickupCode({ ...shipment, ...pickup, logisticsEvents: normalized });
+  }
   shipmentView(shipment, order = this.order(shipment.orderId)) {
+    shipment = this.normalizedShipment(shipment, order);
     const platform = order?.platform, now = this.now(), rules = this.getLogisticsRules?.();
     const stationRules = this.getStationRules?.();
     const catalog = Array.isArray(stationRules) ? stationRules : stationRules?.stations || [];
@@ -589,7 +607,7 @@ export class Store {
   importResult(accountId, result, { partial = false, reconcile = true } = {}) {
     const rules = result.logisticsRules ?? this.getLogisticsRules?.();
     const completionRules = this.pickupCompletion.rules(), completionConfig = this.pickupCompletion.config();
-    const parserKey = hash(JSON.stringify(['shipment-lifecycle-v5', rules, completionRules, completionConfig]));
+    const parserKey = hash(JSON.stringify(['shipment-lifecycle-v6', rules, completionRules, completionConfig]));
     const changedShipmentIds = [];
     const account = this.account(accountId);
     if (!account) fail(404, 'NOT_FOUND', '账号不存在');
@@ -725,6 +743,7 @@ export class Store {
           ...cycle, ...shipping,
           ...logistics };
         if (staleLogistics) shipment.updatedAt = old.updatedAt || shipment.updatedAt;
+        shipment = this.normalizedShipment(shipment, order);
         shipment = this.pickupCompletion.project(shipment, { rules: completionRules, config: completionConfig });
         shipment.logisticsEvidenceHash = logisticsEvidenceHash;
         this.db.prepare('INSERT INTO shipments VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').run(id, accountId, JSON.stringify(shipment));
@@ -776,6 +795,7 @@ export class Store {
     const orderById = new Map(orders.map(order => [order.id, order]));
     const shipments = this.db.prepare('SELECT data FROM shipments ORDER BY id').all().map(parse).filter(visible)
       .filter(shipment => this.shipmentAlias(shipment.id).id === shipment.id).map(s => {
+      s = this.normalizedShipment(s, orderById.get(s.orderId));
       // Configured services publish evidence persisted by imports or explicit rule changes.
       const platform = orderById.get(s.orderId)?.platform;
       const legacyDoorstep = !validTime(s.arrivalAt) ? doorstepEvidence(s.logisticsEvents, { platform, carrier: s.carrier }, this.now()) : {};

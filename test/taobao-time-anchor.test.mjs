@@ -44,11 +44,11 @@ test('Taobao replacement SSR minute labels use this order detail interval, never
 const shippingStage = subtitle => ({ title: '已发货', subtitle, labelDesc: { text: '包裹正在等待揽收' } });
 const summary = result => result.shipments[0].logisticsEvents.find(event => event.provider === 'taobao');
 
-test('Taobao order interval resolves cross-year and unique leap-day labels without guessing the current year', async () => {
+test('Taobao order year resolves late December rollover and leap days in that year', async () => {
   for (const [date, now, label, expected] of [
     ['2025-12-30T12:00:00+08:00', '2026-01-02T10:00:00+08:00', '12-31 23:59', '2025-12-31T23:59:00+08:00'],
     ['2024-02-28T12:00:00+08:00', '2024-03-01T10:00:00+08:00', '02-29 12:00', '2024-02-29T12:00:00+08:00'],
-    ['2023-03-01T12:00:00+08:00', '2026-03-01T10:00:00+08:00', '02-29 12:00', '2024-02-29T12:00:00+08:00'],
+    ['2024-11-06T00:00:00+08:00', '2026-11-10T15:00:00+08:00', '11-10 10:35', '2024-11-10T10:35:00+08:00'],
   ]) {
     const event = summary(await collect({ order: { ...knownOrder(), orderDate: Date.parse(date) }, now: Date.parse(now), stageList: [shippingStage(label)] }));
     assert.equal(event.time, Date.parse(expected), label);
@@ -56,13 +56,13 @@ test('Taobao order interval resolves cross-year and unique leap-day labels witho
   }
 });
 
-test('Taobao detail interval rejects invalid, future, before-order and ambiguous year labels', async () => {
+test('Taobao order year rejects invalid, future and before-order labels without searching other years', async () => {
   for (const [date, now, label] of [
     ['2026-02-28T00:00:00+08:00', '2026-03-02T00:00:00+08:00', '02-29 12:00'],
     ['2024-02-28T00:00:00+08:00', '2024-03-02T00:00:00+08:00', '02-30 12:00'],
     ['2026-11-06T00:00:00+08:00', '2026-11-10T15:00:00+08:00', '11-10 15:01'],
     ['2026-11-06T12:20:38+08:00', '2026-11-10T15:00:00+08:00', '11-06 12:19'],
-    ['2024-11-06T00:00:00+08:00', '2026-11-10T15:00:00+08:00', '11-10 10:35'],
+    ['2023-03-01T12:00:00+08:00', '2026-03-01T10:00:00+08:00', '02-29 12:00'],
     ['2026-11-06T00:00:00+08:00', '2026-11-10T15:00:00+08:00', '11-06 24:00'],
     ['2026-11-06T00:00:00+08:00', '2026-11-10T15:00:00+08:00', '13-06 12:00'],
   ]) {
@@ -82,17 +82,65 @@ test('Taobao second and minute anchors allow their starting minute and day ancho
   assert.equal(summary(await collect({ order, stageList: [shippingStage('11-05 23:59')] })).time, 0);
 });
 
-test('Taobao requires an authoritative valid detail anchor and leaves estimates and completion conflicts undated', async () => {
-  for (const patch of [{ orderDateOrigin: 'list' }, { orderDateOrigin: undefined }, { orderDatePrecision: 'unknown' }, { orderDate: 0 }, { orderDate: NOW + 60000 }]) {
-    assert.equal(summary(await collect({ order: { ...knownOrder(), ...patch }, stageList: [shippingStage('11-10 10:35')] })).time, 0);
+test('Taobao falls back to list or observation year while leaving future anchors, estimates and completion conflicts undated', async () => {
+  for (const patch of [{ orderDateOrigin: 'list' }, { orderDateOrigin: undefined }, { orderDatePrecision: 'unknown' }, { orderDate: 0 }]) {
+    assert.equal(summary(await collect({ order: { ...knownOrder(), ...patch }, stageList: [shippingStage('11-10 10:35')] })).time,
+      Date.parse('2026-11-10T10:35:00+08:00'));
   }
+  assert.equal(summary(await collect({ order: { ...knownOrder(), orderDate: NOW + 60000 }, stageList: [shippingStage('11-10 10:35')] })).time, 0);
   const stageList = [
     ['预计发货', '预计发货'], ['已发货', 'estimated shipping'], ['已发货', 'expected shipping'],
-    ['已签收', '包裹已取出'], ['已领取', '本人已领取'], ['待取件', '已到站等待取件'],
-    ['运输中', '包裹运输中'], ['已退回', '包裹已退回'], ['改派中', '包裹已改派'],
+    ['已签收', '包裹已取出'], ['已领取', '本人已领取'],
+    ['已退回', '包裹已退回'], ['改派中', '包裹已改派'],
     ['已发货', '发货已撤销'], ['已发货', '已发货后已签收'],
   ].map(([title, body]) => ({ title, subtitle: '11-10 10:35', labelDesc: { text: body } }));
   assert.ok((await collect({ stageList })).shipments[0].logisticsEvents.every(event => event.time === 0));
+});
+
+test('Taobao actual pickup and movement stages share the order year', async () => {
+  const stageList = [
+    { title: '派送中', subtitle: '11-13 11:30', labelDesc: { text: '正在派送' } },
+    { title: '待取件', subtitle: '11-13 11:28', labelDesc: { text: '已到站等待取件' } },
+    { title: '运输中', subtitle: '11-12 10:00', labelDesc: { text: '包裹运输中' } },
+  ];
+  const events = (await collect({ stageList, now: Date.parse('2026-11-13T12:00:00+08:00') })).shipments[0].logisticsEvents;
+  assert.deepEqual(events.map(event => event.time), [
+    Date.parse('2026-11-13T11:30:00+08:00'),
+    Date.parse('2026-11-13T11:28:00+08:00'),
+    Date.parse('2026-11-12T10:00:00+08:00'),
+  ]);
+  assert.ok(events.every(event => event.timePrecision === 'minute'));
+});
+
+test('Taobao repeated collection without order dates retains the saved parcel year while accepting new times', async () => {
+  const observed = Date.parse('2025-11-10T12:00:00+08:00');
+  const now = Date.parse('2026-11-13T12:00:00+08:00');
+  const order = { ...knownOrder(), orderDate: 0, shipments: [
+    knownOrder().shipments[0],
+    { waybillNo: 'SYNTHETIC-REPLACEMENT', status: 'transit', logisticsCheckedAt: observed, logisticsDetailCheckedAt: observed }
+  ] };
+  const stageList = [shippingStage('11-10 10:35'), shippingStage('11-12 10:00')];
+  const first = await collect({ order, now, stageList, transit: { expressId: 'SYNTHETIC-REPLACEMENT', address: [] } });
+  const expected = ['2025-11-12T10:00:00+08:00', '2025-11-10T10:35:00+08:00'].map(Date.parse);
+  assert.deepEqual(first.shipments[0].logisticsEvents.map(event => event.time), expected);
+  const second = await collect({ order: { ...order, shipments: [order.shipments[0], ...first.shipments] }, now: now + 86400000,
+    stageList, transit: { expressId: 'SYNTHETIC-REPLACEMENT', address: [] } });
+  assert.deepEqual(second.shipments[0].logisticsEvents.map(event => event.time), expected);
+});
+
+test('Taobao repeated collection retains conflicting saved full-year evidence without borrowing sibling dates', async () => {
+  const savedEvent = year => ({ provider: 'taobao', timeText: `${year}-11-01 12:00`,
+    time: Date.parse(`${year}-11-01T12:00:00+08:00`), timePrecision: 'minute', description: '包裹运输中' });
+  const order = { ...knownOrder(), orderDate: 0, shipments: [
+    knownOrder().shipments[0],
+    { waybillNo: 'SYNTHETIC-REPLACEMENT', status: 'transit', logisticsCheckedAt: NOW - 60000,
+      logisticsEvents: [savedEvent(2024), savedEvent(2025)] }
+  ] };
+  const options = { order, stageList: [shippingStage('11-10 10:35')], transit: { expressId: 'SYNTHETIC-REPLACEMENT', address: [] } };
+  assert.equal(summary(await collect(options)).time, 0);
+  order.shipments[0] = { ...order.shipments[0], logisticsEvents: [savedEvent(2024)] };
+  order.shipments[1].logisticsEvents = [savedEvent(2025)];
+  assert.equal(summary(await collect(options)).time, Date.parse('2025-11-10T10:35:00+08:00'));
 });
 
 for (const phrase of ['用户已提货', '用户已自提', '用户已提取', '用户收取成功']) {
@@ -182,20 +230,22 @@ test('Taobao year-anchor detail supplements obey the shared budget, cooldown and
   const capped = await collectList({ count: 12 });
   assert.equal(capped.detailCalls.length, 10);
   assert.equal(new Set(capped.detailCalls).size, 10);
-  assert.equal(capped.result.shipments.filter(parcel => parcel.logisticsEvents.some(event => event.time > 0)).length, 10);
+  assert.equal(capped.result.shipments.filter(parcel => parcel.logisticsEvents.some(event => event.time > 0)).length, 12);
   const known = { ...knownOrder(), platformOrderId: 'SYNTHETIC-ORDER-0', orderDateOrigin: 'list', dateCheckedAt: NOW - 1000 };
   assert.deepEqual((await collectList({ knownOrders: [known] })).detailCalls, []);
   const failed = await collectList({ knownOrders: [{ ...known, dateCheckedAt: 0 }], detailValue: '' });
   assert.deepEqual(failed.detailCalls, ['SYNTHETIC-ORDER-0']);
-  assert.ok(failed.result.shipments.every(parcel => parcel.logisticsEvents.every(event => !event.time)));
+  assert.ok(failed.result.shipments.every(parcel => parcel.logisticsEvents.every(event => event.time > 0 && event.timePrecision === 'minute')));
 });
 
-test('Taobao detail failure preserves list dates and original partial events; risk errors still stop collection', async () => {
+test('Taobao detail failure uses list year and preserves original labels; risk errors still stop collection', async () => {
   const failed = await collectList({ detailStatus: 503 });
   assert.equal(failed.result.orders[0].orderDateOrigin, 'list');
   assert.equal(failed.result.orders[0].orderDate, Date.parse('2026-11-06T12:20:38+08:00'));
   assert.equal(failed.result.orders[0].dateState, 'error');
-  assert.ok(failed.result.shipments[0].logisticsEvents.every(event => event.time === 0 && event.timeText));
+  assert.deepEqual(failed.result.shipments[0].logisticsEvents.map(event => event.time),
+    ['2026-11-10T10:35:00+08:00', '2026-11-08T10:16:00+08:00', '2026-11-06T12:20:00+08:00'].map(Date.parse));
+  assert.deepEqual(failed.result.shipments[0].logisticsEvents.map(event => event.timeText), ['11-10 10:35', '11-08 10:16', '11-06 12:20']);
   for (const [detailStatus, code] of [[401, 'ACCOUNT_EXPIRED'], [403, 'UPSTREAM_BLOCKED'], [429, 'UPSTREAM_RATE_LIMITED']]) {
     await assert.rejects(collectList({ detailStatus }), { code });
   }

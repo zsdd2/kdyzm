@@ -25,6 +25,7 @@ import { serverVersion } from './version.mjs';
 import { orderRetention } from './order-retention.mjs';
 import { createAppUpdateHandler } from './app-updates.mjs';
 import { createCookieSyncHandler } from './cookie-sync.mjs';
+import { createInteractionDiagnostics } from './interaction-diagnostics.mjs';
 import { fail, hash, HttpError, onlyKeys, publicUrl, RateLimiter } from './security.mjs';
 
 const PUBLIC = new URL('../public/', import.meta.url);
@@ -78,7 +79,8 @@ export function createService({ filename = ':memory:', encryptionKey, adminToken
   recognitionAi = new RecognitionAi({ store, stations, logisticsAi, assistance: aiAssistance, workflow: recognition, now });
   const recognitionApi = createRecognitionApi({ store, workflow: recognition, recognitionAi, stations, logisticsRules, logisticsDaily, now });
   const diagnosticAccess = new DiagnosticAccess({ store, now });
-  const diagnosticApi = createDiagnosticApi({ store, workflow: recognition });
+  const interactionDiagnostics = createInteractionDiagnostics({ now });
+  const diagnosticApi = createDiagnosticApi({ store, workflow: recognition, interactions: interactionDiagnostics });
   const pickupCompletion = store.pickupCompletion;
   const pickupCompletionAi = new PickupCompletionAi({ store, completionStore: pickupCompletion, stations, assistance: aiAssistance, now, automaticEvents: scheduler });
   const enrichCandidates = (accountIds, shipmentIds) => {
@@ -119,6 +121,8 @@ export function createService({ filename = ':memory:', encryptionKey, adminToken
     if (!auth.startsWith('Bearer ') || auth.length > 300) fail(401, 'DEVICE_UNAUTHORIZED', '请绑定设备');
     const current = store.device(auth.slice(7));
     rate.check(`device:${current.id}`, 180);
+    const context = requestInfo.get(req);
+    if (context) context.deviceId = current.id;
     return current;
   };
   const requestSync = id => jobs.request(id).done;
@@ -132,7 +136,41 @@ export function createService({ filename = ':memory:', encryptionKey, adminToken
     pickupCompletionAi.runDue();
   }, 30000).unref() : null;
 
+  const requestInfo = new WeakMap();
+  const interactionCategory = path => {
+    if (path === '/v1/snapshot') return 'snapshot';
+    if (/^\/v1\/shipments\/[^/]+\/logistics$/.test(path)) return 'shipment_detail';
+    if (/^\/v1\/operations(?:\/[^/]+)?$/.test(path)) return 'operations';
+    if (/^\/v1\/(?:sync-jobs\/[^/]+|accounts(?:\/[^/]+)?\/sync)$/.test(path)) return 'sync_job';
+    if (path === '/v1/accounts') return 'accounts';
+    if (path === '/v1/matching-feedback') return 'feedback';
+    if (path === '/v1/recognition-issues') return 'recognition';
+    if (path === '/v1/device/diagnostics') return null;
+    if (path.startsWith('/v1/') && !path.startsWith('/v1/admin/') && !path.startsWith('/v1/diagnostics/')
+      && !path.startsWith('/v1/cookie-sync/') && !path.startsWith('/v1/app-updates/')) return 'other_device';
+    return null;
+  };
   const server = createServer(async (req, res) => {
+    const context = { startedAt: now(), category: null, deviceId: null, mode: undefined, metadataOnly: undefined, operationAckCount: undefined, operationResult: undefined };
+    requestInfo.set(req, context);
+    res.once('finish', () => {
+      if (!context.category) return;
+      const status = res.statusCode;
+      const result = status === 304 ? 'not_modified' : status >= 400 ? 'error'
+        : (context.operationResult || (context.category === 'snapshot' && context.metadataOnly ? 'metadata_only' : 'success'));
+      try {
+        interactionDiagnostics.recordServer({
+          kind: context.category,
+          phase: 'request',
+          result,
+          status,
+          durationMs: Math.max(0, now() - context.startedAt),
+          ...(context.mode ? { mode: context.mode } : {}),
+          ...(context.category === 'snapshot' && context.metadataOnly !== undefined ? { metadataOnly: context.metadataOnly } : {}),
+          ...(context.operationAckCount === undefined ? {} : { count: context.operationAckCount, ackCount: context.operationAckCount })
+        }, context.deviceId);
+      } catch { /* Diagnostics must never affect the primary request. */ }
+    });
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'no-referrer');
     res.setHeader('X-Frame-Options', 'DENY');
@@ -140,6 +178,8 @@ export function createService({ filename = ':memory:', encryptionKey, adminToken
     try {
       const url = new URL(req.url, configuration.baseUrl || 'http://localhost');
       const path = url.pathname;
+      context.category = interactionCategory(path);
+      if (path === '/v1/snapshot') context.mode = url.searchParams.get('view') === 'compact' ? 'compact' : 'full';
       const origin = req.headers.origin;
       let localFixtureOrigin = false;
       if (fixture && origin) {
@@ -192,6 +232,9 @@ export function createService({ filename = ':memory:', encryptionKey, adminToken
         rate.check(`diagnostic-token:${credential.id}`, 120);
         if (req.method !== 'GET') fail(405, 'READ_ONLY', '诊断 API 仅支持读取');
         if (path === '/v1/diagnostics/status') { send(res, 200, { serverVersion, serverTime: now(), scope: 'diagnostics:read', expiresAt: null }); return; }
+        if (path === '/v1/diagnostics/interactions') {
+          send(res, 200, { serverVersion, serverTime: now(), ...diagnosticApi.interactions(url.searchParams) }); return;
+        }
         if (path === '/v1/diagnostics/accounts') { send(res, 200, { accounts: diagnosticApi.accounts() }); return; }
         if (path === '/v1/diagnostics/orders') { send(res, 200, diagnosticApi.orders(url.searchParams)); return; }
         const diagnosticOrder = path.match(/^\/v1\/diagnostics\/orders\/([^/]+)$/);
@@ -406,6 +449,19 @@ export function createService({ filename = ':memory:', encryptionKey, adminToken
         admin(req); send(res, 200, store.revoke(revokePath[1])); return;
       }
       const current = device(req);
+      if (path === '/v1/device/diagnostics' && req.method === 'POST') {
+        rate.check(`device-diagnostics:${current.id}`, 6);
+        const body = await bodyOf(req);
+        onlyKeys(body, ['events']);
+        let result;
+        try {
+          result = interactionDiagnostics.recordClient(current.id, body.events);
+        } catch (error) {
+          if (error instanceof HttpError) throw error;
+          result = { accepted: 0 };
+        }
+        send(res, 202, result); return;
+      }
       if (path === '/v1/ai/channels' && req.method === 'GET') { send(res, 200, aiAssistance.channels()); return; }
       if (path === '/v1/ai/template-proposals' && req.method === 'POST') {
         const body = await bodyOf(req), authorized = device(req);
@@ -486,6 +542,7 @@ export function createService({ filename = ':memory:', encryptionKey, adminToken
         let snapshot = Object.assign(store.snapshot(current, requested.length ? requested : undefined, Buffer.byteLength(JSON.stringify(additional), 'utf8'), url.searchParams.get('view') !== 'compact'), additional);
         snapshot.capabilities = [...new Set([...(snapshot.capabilities || []), 'station_rule_receipts_v1', 'recognition_workflow_v1'])];
         if (url.searchParams.get('view') === 'compact') snapshot = clientSnapshot(snapshot, url.searchParams.get('dataVersion') || '');
+        requestInfo.get(req).metadataOnly = snapshot.metadataOnly === true;
         const etag = `"${hash(JSON.stringify(snapshot))}"`;
         const matches = (req.headers['if-none-match'] || '').split(',').map(t => t.trim().replace(/^W\//, '')).includes(etag);
         send(res, matches ? 304 : 200, matches ? undefined : snapshot, { ETag: etag }); return;
@@ -496,7 +553,10 @@ export function createService({ filename = ':memory:', encryptionKey, adminToken
       }
       if (path === '/v1/operations' && req.method === 'POST') {
         const body = await bodyOf(req); onlyKeys(body, ['operations']);
-        send(res, 200, store.applyOperations(device(req), body.operations)); return;
+        const result = store.applyOperations(current, body.operations);
+        requestInfo.get(req).operationAckCount = result.appliedIds?.length || 0;
+        requestInfo.get(req).operationResult = 'accepted';
+        send(res, 200, result); return;
       }
       const operationPath = path.match(/^\/v1\/operations\/([^/]+)$/);
       if (operationPath && req.method === 'GET') { send(res, 200, store.operation(current, decodeURIComponent(operationPath[1]))); return; }
@@ -509,7 +569,7 @@ export function createService({ filename = ':memory:', encryptionKey, adminToken
   server.requestTimeout = 30000;
   server.headersTimeout = 15000;
   server.maxHeadersCount = 60;
-  return { server, store, requestSync, fixture, running, jobs, stations, stationAi, matchingFeedback, aiAssistance, logisticsRules, logisticsAi, logisticsDaily, recognition, recognitionAi, pickupCompletion, pickupCompletionAi,
+  return { server, store, requestSync, fixture, running, jobs, stations, stationAi, matchingFeedback, aiAssistance, logisticsRules, logisticsAi, logisticsDaily, recognition, recognitionAi, pickupCompletion, pickupCompletionAi, interactionDiagnostics,
     async close() {
       cookieSync.close();
       unsubscribeOptimization();

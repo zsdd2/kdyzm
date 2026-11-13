@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "version": "3.2.0",
+  "version": "3.2.1",
   "upstreamRepository": "https://github.com/SongZX0106/PickCode",
   "upstreamCommit": "07f9fed59122d7f2210a825aadedc2a913a83176",
   "note": "Production source snapshot with authorized downstream modifications; no private data or workflow history.",
@@ -83,7 +83,7 @@
     {
       "path": "android/app/build.gradle",
       "size": 3561,
-      "sha256": "d3f0ee2fb196f7b9314234c0995cd6d7ffea9ff96e29507835f73882d566af08"
+      "sha256": "c55827bc4dcf4eefdefbd2e465e9b1f71dbd6d289654a1f2d980789c65f15b16"
     },
     {
       "path": "android/app/src/main/AndroidManifest.xml",
@@ -131,6 +131,11 @@
       "sha256": "7b3ccc20a54c08ad2112a6375549dba1ccdbad90a8507b673508a824159a51be"
     },
     {
+      "path": "android/app/src/main/java/local/pickcode/assistant/InteractionDiagnostics.java",
+      "size": 11539,
+      "sha256": "b73af903975c9e24c44fe8a2dd865f70bd3ffa0587b837edc8f0457ea090029b"
+    },
+    {
       "path": "android/app/src/main/java/local/pickcode/assistant/LargeWidgetProvider.java",
       "size": 12297,
       "sha256": "a4eec83c18ba500197749f299f75748da4b39a2ac39bd8dd261b6e7eea9a78e3"
@@ -147,8 +152,8 @@
     },
     {
       "path": "android/app/src/main/java/local/pickcode/assistant/OnlineClient.java",
-      "size": 12129,
-      "sha256": "a27eee3d7ee9c321f01d7d01ebcb3a6f6076c833b20c9a754b10b02974370bdd"
+      "size": 12417,
+      "sha256": "18d8bd13c5f46a8f2cd86d080c88cf9ac4ec680d9beb0185b0b9ac9ccc7bcf4a"
     },
     {
       "path": "android/app/src/main/java/local/pickcode/assistant/OnlineEndpoint.java",
@@ -157,8 +162,8 @@
     },
     {
       "path": "android/app/src/main/java/local/pickcode/assistant/OnlineSyncManager.java",
-      "size": 91646,
-      "sha256": "1400e6745b7b8e1894c94c7665095a0011799181255335eeba0a383e7119d993"
+      "size": 97304,
+      "sha256": "ffcbaeaabec71dc779eb12a5d9a44dbef29f8f15713132c1c87a868636bbbddc"
     },
     {
       "path": "android/app/src/main/java/local/pickcode/assistant/OnlineSyncScheduler.java",
@@ -552,8 +557,8 @@
     },
     {
       "path": "core/pickcode-core.js",
-      "size": 188973,
-      "sha256": "c2c388bbce40f05e29f09bb31889db3dfc77ccabb79952ba0eaf2b3d1f9c7226"
+      "size": 197050,
+      "sha256": "ddf1ea8ad40e8e738a9d7875f9e4cf335737ef9340c76606ec2e37947dc57ba1"
     },
     {
       "path": "index.html",
@@ -573,17 +578,17 @@
     {
       "path": "manifest.json",
       "size": 3241,
-      "sha256": "2c5708dbb48a95568814e36b1d72280b897b427e8ee175e76a6386d4a5c05ee9"
+      "sha256": "80a213ed44e104c17be1ce2ee2e0c84684c4de2d526b4eaf9f2e3b89e9577f04"
     },
     {
       "path": "package-lock.json",
       "size": 256607,
-      "sha256": "27ea87e51ac33347713b800052b4080f24ec64e5521d9388619bde6eba5b358a"
+      "sha256": "24608b0fd9ea046fd4cf41ad3ca3f01370259958ddf108dda9a4dec5accfd226"
     },
     {
       "path": "package.json",
       "size": 1727,
-      "sha256": "5f9b3bc8a3cdab9121d1349795066454a77a5d3d0c2bc88bff7ce5da2c97b086"
+      "sha256": "d2188b0feaa0632225c5c1c62f96cc6c5c2e3cbf8daf3f6beb2f652965a98e29"
     },
     {
       "path": "pages.json",
@@ -612,8 +617,8 @@
     },
     {
       "path": "pages/my/changelog.vue",
-      "size": 50607,
-      "sha256": "29f47376c6ecb24c459916ae86ac570aa873adca5dcafbb9fd060c45f15c1a3f"
+      "size": 51485,
+      "sha256": "c51bd7cf5fe8d1d23d135d403977ed2e6473a7ac4d1731b96a2f8cca0d6f6e43"
     },
     {
       "path": "pages/my/faq.vue",
@@ -2625,7 +2630,7 @@
     {
       "path": "README.md",
       "size": 2054,
-      "sha256": "59e430d19d783426306bbba27e025addcbabc5cac1764201058ac6b079ecb385"
+      "sha256": "bf78403f67c7ac1a308f790a96efcd1d98b6f33d429a7ff8dd0f7d1e76a61d5e"
     },
     {
       "path": ".gitignore",

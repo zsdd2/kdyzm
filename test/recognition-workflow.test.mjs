@@ -102,6 +102,36 @@ test('backend normalizes old client code fields only after validating their sche
     source: { ...input.source, [field]: 42 } }, { deviceId: 'd-one' }), /格式无效/);
 });
 
+test('a new hard client conflict invalidates an existing AI review and restarts the retry-to-AI path', async t => {
+  const f = fixture(t), shipment = f.add({ logisticsState: 'ok' });
+  const initial = f.workflow.submit({ ...report([shipment.id]), reasonCodes: ['code_station_conflict'] }, { deviceId: 'd-one' });
+  const reviewed = f.workflow.save({
+    ...initial,
+    status: 'review',
+    reasonCode: 'AI_REVIEW_REQUIRED',
+    retryCount: 3,
+    aiAttempts: 1,
+    candidateIds: ['candidate-1'],
+    nextRetryAt: f.now(),
+  });
+  const changed = f.workflow.submit({
+    ...report([shipment.id], 2),
+    reasonCodes: ['code_station_conflict', 'code_mismatch'],
+  }, { deviceId: 'd-one' });
+  assert.equal(changed.status, 'pending');
+  assert.equal(changed.retryCount, 0);
+  assert.equal(changed.aiAttempts, 0);
+  assert.equal(changed.evidenceVersion, reviewed.evidenceVersion + 1);
+  assert.notEqual(changed.sourceFingerprint, reviewed.sourceFingerprint);
+  for (const minutes of [5, 10, 15]) {
+    f.advance(minutes * MINUTE);
+    await f.run();
+  }
+  await f.run();
+  assert.equal(f.analyses.length, 1);
+  assert.equal(f.workflow.task(changed.id).status, 'ai_running');
+});
+
 test('two-parcel core reports reopen after partial unlink without resetting the backend retry budget', async t => {
   const f = fixture(t); f.advance(Date.now() - f.now() + 1000);
   const one = f.add({ logisticsState: 'ok', status: 'arrived', station: '合成花园店', arrivalAt: 0 }),

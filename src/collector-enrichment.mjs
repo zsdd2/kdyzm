@@ -77,8 +77,24 @@ export function providerEventFields(event) {
   return fields;
 }
 
+const TAOBAO_STAGE_STATUSES = new Set(['waitdo', 'doing', 'done']);
+
+export function logisticsEventDescriptionKey(event) {
+  const description = event.description || '';
+  return event.provider === 'taobao'
+    ? description.replace(/^(?:运输中|派送中|派件中|待取件|已揽件|已发货|已下单|仓库处理中)[：:]\s*/u, '')
+    : description;
+}
+
 export function mergeProviderEventFields(target, source) {
   const fields = providerEventFields(source);
+  // UI-only delivery stages can merge; collection statuses remain evidence for completion.
+  if (target.provider === 'taobao' && fields.provider === 'taobao'
+    && TAOBAO_STAGE_STATUSES.has(target.providerStatus) && TAOBAO_STAGE_STATUSES.has(fields.providerStatus)
+    && [target, source].every(event =>
+      /^(?:运输中|派送中|派件中|待取件|已揽件|已发货|已下单|仓库处理中)(?:[：:]|$)/u.test(event.providerStatusTag || event.description || '')
+      && !/签收|领取|取出|取走|提走|提货|提取|自提|收取|收货|已取件|取件成功|退回|退货|退件|改派|改投|转寄|取消|撤销/u
+        .test([event.description, event.providerStatusText].join(' ')))) delete fields.providerStatus;
   // Conflicting platform facts must remain separate so completion can see both sides.
   if (Object.keys(fields).some(key => target[key] && target[key] !== fields[key])) return false;
   Object.assign(target, fields);
@@ -98,7 +114,7 @@ export function normalizeLogisticsEvents(events, timestamp, rules, now) {
       ...providerEventFields(event),
     };
     if (!normalized.description) continue;
-    const key = JSON.stringify([normalized.time, normalized.time ? '' : normalized.timeText, normalized.description, normalized.location,
+    const key = JSON.stringify([normalized.time, normalized.time ? '' : normalized.timeText, logisticsEventDescriptionKey(normalized), normalized.location,
       logisticsEventTimeIssue(normalized, now ?? Date.now()) === 'timeConflict']);
     const matches = seen.get(key) || [];
     if (matches.some(prior => mergeProviderEventFields(prior, normalized))) continue;
@@ -135,35 +151,53 @@ export function corroborateTaobaoEventTimes(events, fullTrack, now = Date.now(),
 
 export function taobaoTimeAnchorCandidate(event) {
   const description = text(event.description).normalize('NFKC').replace(/\s+/gu, '');
+  const stage = text(event.providerStatusTag).normalize('NFKC').replace(/\s+/gu, '');
+  const status = eventStatus(description, 'unknown');
+  const operational = status === 'transit' || status === 'arrived'
+    || /待取件|待领取|待自提|运输中|派送中|派件中|入站|到站|入库|入柜/.test(stage)
+    || /(?:快件|包裹|快递)已(?:发往|到达|离开)/.test(description);
+  const hardUnsafe = /预计|预估|预期|估计|estimated?|expected|签收|取出|领取|取走|提走|退回|退货|退件|改派|改投|转寄|取消|撤销|失败|异常|有误/i.test(description);
+  const uncertainOperational = /尚未|等待(?:揽收|发货|派送|签收)|待(?:发货|派送|签收)/i.test(description);
   return event.provider === 'taobao' && !event.time && /^\d{2}-\d{2} \d{2}:\d{2}$/.test(event.timeText)
-    && !/预计|预估|预期|估计|estimated?|expected|签收|取出|领取|取走|取件|提走|到站|到达|入库|入柜|退回|退货|退件|改派|改投|转寄/i.test(description)
+    && !hardUnsafe
     && !completionKind(event.description)
     && !pickupCycleReset(event.description)
-    && (shippingEvent(event.description) || ['已下单', '仓库处理中'].includes(event.providerStatusTag));
+    && (shippingEvent(event.description) || ['已下单', '仓库处理中'].includes(event.providerStatusTag) || operational && !uncertainOperational)
+    && status !== 'signed';
 }
 
-export function anchorTaobaoEventTimes(events, order, now, fullTrack = []) {
+export function anchorTaobaoEventTimes(events, order, now, fullTrack = [], { observedAt = now, savedEvents = [] } = {}) {
   const offset = 8 * 3600000, date = order?.orderDate;
-  if (order?.orderDateOrigin !== 'detail' || !['second', 'minute', 'day'].includes(order.orderDatePrecision)
-    || !Number.isSafeInteger(date) || date <= 0 || !Number.isSafeInteger(now) || date > now || now >= 8640000000000000 - offset) return events;
+  const validTime = value => Number.isSafeInteger(value) && value > 0 && value < 8640000000000000 - offset;
+  if (!validTime(now) || validTime(date) && date > now) return events;
+  const hasOrderDate = validTime(date) && ['second', 'minute', 'day'].includes(order?.orderDatePrecision);
+  const fullDates = [...events, ...fullTrack, ...savedEvents].filter(event => validTime(event.time)
+    && logisticsTimePrecision(event.timeText) !== 'unknown' && !logisticsEventTimeIssue(event, now));
+  const fallback = validTime(observedAt) && observedAt <= now ? observedAt : now;
+  const anchor = new Date((hasOrderDate ? date : fullDates.length ? Math.min(...fullDates.map(event => event.time)) : fallback) + offset);
+  const year = anchor.getUTCFullYear(), month = anchor.getUTCMonth() + 1;
+  if (year > 9999) return events;
+  const lateDecember = month === 12 && anchor.getUTCDate() >= 20
+    || fullDates.some(event => { const d = new Date(event.time + offset); return d.getUTCFullYear() === year && d.getUTCMonth() === 11 && d.getUTCDate() >= 20; });
+  // An order normally stays in one year; only the late-December/January boundary rolls over.
+  const labelYear = label => lateDecember && label.startsWith('01-') ? year + 1
+    : !hasOrderDate && month === 1 && /^12-(?:2\d|3[01]) /.test(label) ? year - 1 : year;
+  if (fullDates.some(event => {
+    const label = new Date(event.time + offset).toISOString();
+    return Number(label.slice(0, 4)) !== labelYear(label.slice(5, 16).replace('T', ' '));
+  })) return events;
   // A minute label may describe the same minute as the second-precision order time.
-  const notBefore = order.orderDatePrecision === 'day' ? Math.floor((date + offset) / 86400000) * 86400000 - offset : Math.floor(date / 60000) * 60000;
-  const firstYear = new Date(notBefore + offset).getUTCFullYear(), lastYear = new Date(now + offset).getUTCFullYear();
-  if (lastYear > 9999) return events;
+  const notBefore = !hasOrderDate ? 0 : order.orderDatePrecision === 'day'
+    ? Math.floor((date + offset) / 86400000) * 86400000 - offset : Math.floor(date / 60000) * 60000;
   return events.map(event => {
     if (!taobaoTimeAnchorCandidate(event)) return event;
     // A matching PC minute left unresolved by corroboration is conflicting evidence.
     if (fullTrack.some(other => Number.isSafeInteger(other.time) && other.time > 0 && other.time < 8640000000000000 - offset
       && new Date(other.time + offset).toISOString().slice(5, 16).replace('T', ' ') === event.timeText)) return event;
-    let candidate = 0;
-    for (let year = firstYear; year <= lastYear; year++) {
-      const value = `${year}-${event.timeText.replace(' ', 'T')}:00+08:00`, time = Date.parse(value);
-      if (!Number.isFinite(time) || time < notBefore || time > now
-        || new Date(time + offset).toISOString().slice(5, 16).replace('T', ' ') !== event.timeText) continue;
-      if (candidate) return event;
-      candidate = time;
-    }
-    return candidate ? { ...event, time: candidate, timePrecision: 'minute' } : event;
+    const candidate = Date.parse(`${labelYear(event.timeText)}-${event.timeText.replace(' ', 'T')}:00+08:00`);
+    return validTime(candidate) && candidate >= notBefore && candidate <= now
+      && new Date(candidate + offset).toISOString().slice(5, 16).replace('T', ' ') === event.timeText
+      ? { ...event, time: candidate, timePrecision: 'minute' } : event;
   }).sort((a, b) => b.time - a.time);
 }
 

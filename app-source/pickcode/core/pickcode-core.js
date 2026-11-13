@@ -259,6 +259,48 @@ var PickCodeCore = (function () {
     return m?m[1].split(/(?:请凭|凭取|取件码|取货码)/)[0].trim():'';
   }
   function sourceStation(state,source) { var correction=activeCorrection(state,source);return correction?correction.stationName:rawSourceStation(state,source); }
+  function supportedShipmentPlatform(state,shipment) {
+    var order=shipment&&byId(state.orders,shipment.orderId),platform=text(order&&order.platform,40).toLowerCase();
+    return ['taobao','jd','pdd'].indexOf(platform)>=0;
+  }
+  function codeTimeConflict(state,source,shipment) {
+    var times=sourceTimes(source),at=times.sent||times.received;
+    if(!at||!trustedArrival(shipment)||near(at,shipment.arrivalAt))return false;
+    return true;
+  }
+  function codeCycleConflict(source,shipment) {
+    var at=sourceTimes(source).sent||source.date,events=logisticsEvents(shipment&&shipment.logisticsEvents);
+    if(!at)return false;
+    var cycle=shipment.pickupCycle;
+    if(cycle&&cycle.evidenceKey&&['initial','legacy'].indexOf(cycle.evidenceKey)<0&&timestamp(cycle.startedAt)>at)return true;
+    if((shipment.pickupCycleHistory||[]).some(function(cycle){return timestamp(cycle.closedAt)>at;}))return true;
+    return events.some(function(event){return timestamp(event.time)>at&&actualPickupCycleReset(event)&&logistics.eventTimeIssue(event,Date.now())!=='timeConflict';});
+  }
+  function codeEvidenceConflicts(state,source,shipment) {
+    var parsed=sourceParsed(state,source),codes=[],wb=sourceWaybill(source.body),carrier=recognizedCarrier(parsed.express),shipmentCarrier=recognizedCarrier(shipment.carrier);
+    if(wb&&text(shipment.waybillNo,60).toUpperCase()!==wb)codes.push('code_waybill_conflict');
+    if(carrier&&shipmentCarrier&&carrier!==shipmentCarrier)codes.push('code_carrier_conflict');
+    var station=stationMatch(state,sourceStation(state,source),shipment.station);
+    if(station==='different'||station==='review'){
+      var left=cabinetDisplay([sourceStation(state,source)]),right=cabinetDisplay([shipment.station]);
+      codes.push(left.pickupCabinetConflict||right.pickupCabinetConflict||left.pickupCabinet&&right.pickupCabinet&&left.pickupCabinet!==right.pickupCabinet?'code_cabinet_conflict':'code_station_conflict');
+    }
+    if(codeTimeConflict(state,source,shipment))codes.push('code_time_conflict');
+    if(codeCycleConflict(source,shipment))codes.push('code_cycle_conflict');
+    var order=byId(state.orders,shipment.orderId),at=sourceTimes(source).sent||source.date;
+    if(order&&timestamp(order.orderDate)>at&&(order.orderDateSource==='platform'||order.orderDateOrigin==='detail'))codes.push('code_time_conflict');
+    return unique(codes);
+  }
+  function codeEvidenceConflict(state,source,shipment) {
+    var parsed=sourceParsed(state,source);
+    if(!supportedShipmentPlatform(state,shipment)||parsed.kind!=='pickup'||!validCode(parsed.code)||!validCode(shipment.pickupCode))return null;
+    var conflicts=codeEvidenceConflicts(state,source,shipment);
+    if(conflicts.length)return { reasonCode:conflicts[0], reasonCodes:conflicts, reason:'取件码关联证据存在冲突' };
+    if(parsed.kind==='pickup'&&validCode(parsed.code)&&validCode(shipment.pickupCode)&&parsed.code!==shipment.pickupCode) {
+      return { reasonCode:'code_mismatch', reason:'短信取件码与该包裹不同' };
+    }
+    return null;
+  }
   function stationFragment(value) {
     var fragment=text(value,400).replace(/https?:\/\/\S+|www\.\S+/ig,'').replace(/(?:取件码|取货码|提货码|运单号|订单号|快递单号|手机号|电话|联系)\s*(?:为|是)?\s*[:：]?\s*[A-Za-z0-9*+\- ]+/g,'')
       .replace(/(?:JT|YT|SF|JD|ZTO|STO)\d{8,}|[A-Za-z]*\d{9,}[A-Za-z0-9]*|\d{3,}(?:-\d+)+/ig,'')
@@ -495,7 +537,8 @@ var PickCodeCore = (function () {
       if(!candidates.length)return;
       candidates=candidates.slice(0,20).sort(function(a,b){return a.remoteId.localeCompare(b.remoteId);});
       var sourceKey=binding+'|'+state.recognitionIssues.epoch+'|'+source.id,sourceId='source-'+hash(state.clientId+'|'+sourceKey),station=state.settings.stationEnhancement?stationFragment(sourceStation(state,source)):'',times=sourceTimes(source);
-      var carrier=carrierKey(parsed.express),reasons=resolved?[]:unique(recommendations.filter(function(value){return candidates.some(function(ship){return ship.id===value.shipmentId;});}).map(function(value){return value.decisionReason;}).filter(function(value){return /^[a-z_]{1,80}$/.test(value||'');}));
+      var carrier=carrierKey(parsed.express),reasons=resolved?[]:unique(recommendations.filter(function(value){return candidates.some(function(ship){return ship.id===value.shipmentId;});}).reduce(function(list,value){var values=value.conflictReasonCodes||[value.conflictReasonCode||value.decisionReason];return list.concat(values);},[]).filter(function(value){return /^[a-z_]{1,80}$/.test(value||'');}));
+      if(!resolved&&reasons.some(function(value){return value==='code_mismatch'||/^code_(?:station|cabinet|carrier|waybill|time|cycle)_conflict$/.test(value);}))reasons=['code_conflict'].concat(reasons.filter(function(value){return value!=='code';}));
       if(!resolved&&(source.matchConflicts||[]).length)reasons.push('evidence_conflict');
       if(!resolved&&!reasons.length)reasons.push('insufficient_evidence');
       var payload={kind:'unmatched_pickup',state:resolved?'resolved':'unresolved',sourceId:sourceId,
@@ -594,9 +637,22 @@ var PickCodeCore = (function () {
   function sourceRecommendations(state,source) {
     var strong=sourceCandidates(state,source),times=sourceTimes(source),parsed=sourceParsed(state,source),result=[];
     if(parsed.kind!=='pickup')return result;
+    var code=validCode(parsed.code)?parsed.code:'',wb=sourceWaybill(source.body);
     state.shipments.forEach(function(shipment){
-      if(matchLinkReason(state,shipment,source))return;
       var arrivalKnown=trustedArrival(shipment),delta=arrivalKnown?Math.abs(shipment.arrivalAt-(times.sent||times.received)):null,withinRecommendationWindow=!arrivalKnown||delta<=48*60*60*1000;
+      var platformCode=supportedShipmentPlatform(state,shipment)&&validCode(shipment.pickupCode),sameCode=!!code&&platformCode&&shipment.pickupCode===code,waybillMatch=!!wb&&shipment.waybillNo.toUpperCase()===wb;
+      var linkReason=matchLinkReason(state,shipment,source);
+      if(linkReason&&!(sameCode&&linkReason==='包裹已关联其他取件短信'))return;
+      if(sameCode){
+        var codeConflict=codeEvidenceConflict(state,source,shipment);
+        if(codeConflict){result.push({shipmentId:shipment.id,kind:'code_conflict',stationMatch:'conflict',deltaMs:delta,autoEligible:false,decisionReason:'code_conflict',conflictReasonCode:codeConflict.reasonCode,conflictReasonCodes:codeConflict.reasonCodes||[codeConflict.reasonCode],evidence:['pickup_code'],reason:codeConflict.reason});return;}
+        var uniqueCode=strong.length===1&&(Number(parsed.packageCount)||1)===1;
+        result.push({shipmentId:shipment.id,kind:'code',stationMatch:stationMatch(state,sourceStation(state,source),shipment.station),deltaMs:delta,autoEligible:uniqueCode,decisionReason:uniqueCode?'code':strong.length>1?'multiple_shipments':'multiple_pieces',evidence:['pickup_code'],reason:uniqueCode?'取件码一致':'取件码一致，包裹数量需核对'});
+        return;
+      }
+      if(code&&platformCode&&(waybillMatch||sourceLinks(state,source).indexOf(shipment.id)>=0||delta!==null&&delta<=1800000&&stationMatch(state,sourceStation(state,source),shipment.station)==='same')){
+        result.push({shipmentId:shipment.id,kind:'code_conflict',stationMatch:'conflict',deltaMs:delta,autoEligible:false,decisionReason:'code_conflict',conflictReasonCode:'code_mismatch',evidence:waybillMatch?['pickup_code','waybill']:['pickup_code'],reason:'短信与平台取件码不同，需核对'});return;
+      }
       var conflict=matchConflict(state,source,shipment);
       if(conflict){if(withinRecommendationWindow&&(conflict==='短信取件站点存在规则歧义，请后台核对'||conflict==='短信取件站点与该包裹不同'&&stationReviewRelated(sourceStation(state,source),shipment.station)))result.push({shipmentId:shipment.id,kind:'station',stationMatch:'review',deltaMs:delta,autoEligible:false,decisionReason:'station_unconfirmed',evidence:[],reason:conflict==='短信取件站点存在规则歧义，请后台核对'?'站点规则存在歧义，需后台核对':'站点名称相近，需后台核对'});return;}
       var match=timeMatch(state,source,shipment),known=strong.some(function(s){return s.id===shipment.id;});
@@ -604,7 +660,7 @@ var PickCodeCore = (function () {
       if(!match&&withinRecommendationWindow&&stationMatch(state,sourceStation(state,source),shipment.station)==='same')match={shipmentId:shipment.id,kind:'station',stationMatch:'same',deltaMs:delta,autoEligible:false,decisionReason:arrivalKnown?'insufficient_evidence':'arrival_time_unknown',evidence:['station'],reason:arrivalKnown?'站点一致，需确认包裹':'站点一致，时间未知，需确认包裹'};
       if(match)result.push(match);
     });
-    var ranks={waybill:0,code:1,time_station:2,time:3,station:4};
+    var ranks={code_conflict:0,waybill:1,code:2,time_station:3,time:4,station:5};
     return result.sort(function(a,b){return ranks[a.kind]-ranks[b.kind]||(a.deltaMs==null?Infinity:a.deltaMs)-(b.deltaMs==null?Infinity:b.deltaMs);});
   }
   function groupNeedsMatchReview(state,item) {return liveSources(state,item).some(function(s){return !!s.matchNeedsReview;});}
@@ -968,9 +1024,17 @@ var PickCodeCore = (function () {
     var p=s.parsed||parse(s.body,state.rules);if(!p)return [];
     var wb=sourceWaybill(s.body),carrier=carrierKey(p.express);
     var exact=wb?state.shipments.filter(function(x){return boundShipment(state,x)&&!packageHidden(state,x)&&x.waybillNo.toUpperCase()===wb&&(!carrier||/菜鸟|兔喜|拼多多|驿站/.test(carrier)||carrier===carrierKey(x.carrier));}):[];
-    if(wb)return exact;
-    if(p.kind!=='pickup')return [];
-    return state.shipments.filter(function(x){return boundShipment(state,x)&&!packageHidden(state,x)&&x.pickupCode===p.code&&automaticPlaceMatch(state,x.station,sourceStation(state,s),sourceItem(state,s),x,s)&&near(x.arrivalAt,s.date);});
+    if(p.kind!=='pickup')return exact;
+    var code=validCode(p.code)?p.code:'';
+    var coded=code?state.shipments.filter(function(x){
+      return supportedShipmentPlatform(state,x)&&boundShipment(state,x)&&!packageHidden(state,x)&&x.pickupCode===code&&!matchLinkReason(state,x,s);
+    }):[];
+    if(coded.length){
+      var sameWaybill=wb?coded.filter(function(x){return x.waybillNo.toUpperCase()===wb;}):[];
+      return sameWaybill.length?sameWaybill:coded;
+    }
+    if(wb)return exact.filter(function(x){return !supportedShipmentPlatform(state,x)||!matchLinkReason(state,x,s)&&(!code||!validCode(x.pickupCode)||x.pickupCode===code);});
+    return state.shipments.filter(function(x){return !supportedShipmentPlatform(state,x)&&boundShipment(state,x)&&!packageHidden(state,x)&&x.pickupCode===p.code&&automaticPlaceMatch(state,x.station,sourceStation(state,s),sourceItem(state,s),x,s)&&near(x.arrivalAt,s.date);});
   }
   function mergeSharedPickupGroups(state) {
     var groups=[];
@@ -1010,10 +1074,33 @@ var PickCodeCore = (function () {
     state.sources.forEach(function(s){
       if(s.ignored||s.deleted||s.manualUnlinked)return;
       var links=sourceLinks(state,s);
-      if(links.length){links.forEach(function(id){var linked=byId(state.shipments,id);if(linked)mergeSource(state,s,linked,false);});return;}
+      if(links.length){
+        links.forEach(function(id){var linked=byId(state.shipments,id);if(linked)mergeSource(state,s,linked,false);});
+        var retainedIds=links.slice(),newCandidates=sourceCandidates(state,s);
+        if(!s.manualLinked){
+          var review=retainedIds.some(function(id){var linked=byId(state.shipments,id);return linked&&supportedShipmentPlatform(state,linked)&&!!codeEvidenceConflict(state,s,linked);})
+            ||newCandidates.some(function(candidate){
+              if(retainedIds.indexOf(candidate.id)>=0)return false;
+              var group=groupForShipment(state,candidate.id),sourceGroup=sourceItem(state,s);
+              return !(s.matchBasis==='取件码与站点一致'&&group&&sourceGroup&&group.id===sourceGroup.id
+                &&automaticPlaceMatch(state,candidate.station,sourceStation(state,s),sourceGroup,candidate,s)&&near(candidate.arrivalAt,s.date)&&!codeEvidenceConflict(state,s,candidate));
+            });
+          state.pickupBindings.filter(function(b){return b.sourceId===s.id&&retainedIds.indexOf(b.shipmentId)>=0&&(b.status==='confirmed'||b.status==='review_required');})
+            .forEach(function(b){bindingStatus(b,review?'review_required':'confirmed',review?'evidence_conflict':'retained_confirmation');});
+          projectSourceBindings(state,s);
+        }
+        return;
+      }
       var candidates=sourceCandidates(state,s);s.candidateShipmentIds=candidates.map(function(x){return x.id;});
       var groups=unique(candidates.map(function(x){var g=groupForShipment(state,x.id);return g?g.id:x.id;}));
-      if(candidates.length&&groups.length===1){mergeSource(state,s,candidates[0],false);s.matchBasis=sourceWaybill(s.body)?'运单号一致':'取件码与站点一致';}
+      var item=sourceItem(state,s),legacy=candidates.length&&candidates.every(function(x){return !supportedShipmentPlatform(state,x);});
+      var provenGroup=candidates.length&&groups.length===1&&candidates.every(function(x){
+        return !codeEvidenceConflict(state,s,x)&&automaticPlaceMatch(state,x.station,sourceStation(state,s),item,x,s)&&near(x.arrivalAt,s.date);
+      });
+      var only=candidates.length===1&&groups.length===1&&(Number(sourceParsed(state,s).packageCount)||1)===1&&(!item||!item.isPicked),
+        conflict=only?codeEvidenceConflict(state,s,candidates[0]):null;
+      // Preserve established same-code, same-place groups and their anonymous pickup counts.
+      if(legacy&&groups.length===1||provenGroup||only&&!conflict){mergeSource(state,s,candidates[0],false);s.matchBasis=sourceWaybill(s.body)?'运单号一致':provenGroup?'取件码与站点一致':'取件码一致';s.matchNeedsReview=false;}
     });
     var graph=[],reverse={};
     state.sources.forEach(function(source){
@@ -1036,7 +1123,7 @@ var PickCodeCore = (function () {
         else if(entry.count!==1){match.decisionReason='multiple_pieces';match.reason+='；多件短信需人工确认';}
         else if(single)match.decisionReason='automatic';
       });
-      if(links.length){source.matchNeedsReview=matches.some(function(m){return links.indexOf(m.shipmentId)<0||reverse[m.shipmentId].length>1;});state.pickupBindings.filter(function(b){return b.sourceId===source.id&&links.indexOf(b.shipmentId)>=0&&(b.status==='confirmed'||b.status==='review_required');}).forEach(function(b){bindingStatus(b,source.matchNeedsReview?'review_required':'confirmed',source.matchNeedsReview?'evidence_conflict':'retained_confirmation');});}
+      if(links.length){source.matchNeedsReview=source.matchNeedsReview||matches.some(function(m){return links.indexOf(m.shipmentId)<0||reverse[m.shipmentId].length>1;});state.pickupBindings.filter(function(b){return b.sourceId===source.id&&links.indexOf(b.shipmentId)>=0&&(b.status==='confirmed'||b.status==='review_required');}).forEach(function(b){bindingStatus(b,source.matchNeedsReview?'review_required':'confirmed',source.matchNeedsReview?'evidence_conflict':'retained_confirmation');});}
       else if(single){mergeSource(state,source,byId(state.shipments,matches[0].shipmentId),false);source.matchBasis=matches[0].reason;source.matchNeedsReview=false;}
       source.timeMatchCandidates=matches;
     });
@@ -1456,7 +1543,7 @@ var PickCodeCore = (function () {
       if(input.stationSource!==undefined&&(!preservePickup||text(input.station,200))){s.station=text(input.station,200);s.stationSource=['platform_event','locker','unknown'].indexOf(input.stationSource)>=0?input.stationSource:'unknown';}
       var code=normalize(text(input.pickupCode,40));
       var unresolvedStationCode=s.status==='arrived'&&s.stationSource==='platform_event'&&s.station&&undatedPickupTransition(logisticsEvents(input.logisticsEvents))==='arrival';
-      if((s.arrivalAt>0||unresolvedStationCode)&&validCode(code)&&code!==s.pickupCode){s.pickupCode=code;s.codeUpdatedAt=updated;}
+      if((s.arrivalAt>0||unresolvedStationCode||s.status==='arrived'&&undatedPickupTransition(logisticsEvents(input.logisticsEvents))!=='reset')&&validCode(code)&&code!==s.pickupCode){s.pickupCode=code;s.codeUpdatedAt=updated;}
       else if(input.arrivalAtSource!==undefined&&input.pickupCode===''&&!preservePickup)s.pickupCode='';
       else s.pickupCode=s.pickupCode||'';
       if(platformView){
@@ -1483,7 +1570,7 @@ var PickCodeCore = (function () {
     });
     (snap.deletedIds||[]).forEach(function(id){var o=byId(state.orders,prefix+id),s=byId(state.shipments,prefix+id);if(o)o.deleted=true;if(s)s.deleted=true;});
     (snap.hiddenIds||[]).forEach(function(id){var o=byId(state.orders,prefix+id),s=byId(state.shipments,prefix+id);if(o&&o.manualHidden===undefined)o.hidden=true;if(s&&s.manualHidden===undefined)s.hidden=true;});
-    state.online.accounts=publicAccounts(snap.accounts);state.online.families=publicFamilies(snap.families);state.online.familyIds=scope.familyIds;state.online.legacyAccountIds=scope.legacyAccountIds;state.online.hasFamilyScope=scope.hasFamilyScope;state.online.revision=snap.serverRevision;state.online.importVersion=importVersion;state.online.serverVersion=text(snap.serverVersion,40);state.online.capabilities=(Array.isArray(snap.capabilities)?snap.capabilities:[]).filter(function(c){return ['syncJobs','conditionalSync','orderRefresh','orderDateOverride','station_aliases_v1','pickup_completion_v1','pickup_confirmed_at_v1','matching_feedback_v1','station_rule_receipts_v1','recognition_workflow_v1','pickup_cycles_v1','order_retention_v1','normalized_shipments_v1','compact_snapshot_v1','shipment_details_v1'].indexOf(c)>=0;});state.online.lastSuccessAt=timestamp(p.syncedAt)||Date.now();state.online.error='';state.online.errorCode='';
+    state.online.accounts=publicAccounts(snap.accounts);state.online.families=publicFamilies(snap.families);state.online.familyIds=scope.familyIds;state.online.legacyAccountIds=scope.legacyAccountIds;state.online.hasFamilyScope=scope.hasFamilyScope;state.online.revision=snap.serverRevision;state.online.importVersion=importVersion;state.online.serverVersion=text(snap.serverVersion,40);state.online.capabilities=(Array.isArray(snap.capabilities)?snap.capabilities:[]).filter(function(c){return ['syncJobs','conditionalSync','orderRefresh','orderDateOverride','station_aliases_v1','pickup_completion_v1','pickup_confirmed_at_v1','matching_feedback_v1','station_rule_receipts_v1','recognition_workflow_v1','interaction_diagnostics_v1','pickup_cycles_v1','order_retention_v1','normalized_shipments_v1','compact_snapshot_v1','shipment_details_v1'].indexOf(c)>=0;});state.online.lastSuccessAt=timestamp(p.syncedAt)||Date.now();state.online.error='';state.online.errorCode='';
     if(capability(state,'pickup_completion_v1')&&snap.pickupCompletion&&snap.pickupCompletion.version===1){
       state.online.pickupCompletion={version:1,enabled:snap.pickupCompletion.enabled===true,aiEnabled:snap.pickupCompletion.aiEnabled===true,aiState:text(snap.pickupCompletion.aiState,80),message:text(snap.pickupCompletion.message,300)};
     } else delete state.online.pickupCompletion;

@@ -33,6 +33,7 @@ public final class OnlineSyncManager {
     private final SharedPreferences metadata;
     private final AssistantStore store;
     private final BackendRoutes routes = new BackendRoutes(BuildConfig.DEBUG);
+    private final InteractionDiagnostics diagnostics = new InteractionDiagnostics();
     // A 304 keeps this coverage; omitted jobs and a restarted process still use the legacy status endpoint.
     private final Set<String> snapshotJobIds = new HashSet<>();
     private long connectionCheckedAt;
@@ -48,7 +49,10 @@ public final class OnlineSyncManager {
         secrets = SecretStore.online(this.context);
         metadata = this.context.getSharedPreferences("online_metadata", Context.MODE_PRIVATE);
         store = AssistantStore.get(this.context);
-        if (secrets.configured()) aiSessionKey();
+        if (secrets.configured()) {
+            diagnostics.resumeSession();
+            aiSessionKey();
+        }
     }
     public static synchronized OnlineSyncManager get(Context context) {
         if (instance == null) instance = new OnlineSyncManager(context);
@@ -87,6 +91,7 @@ public final class OnlineSyncManager {
     private void rotateAiSession() {
         sessionGeneration++;
         snapshotJobIds.clear();
+        diagnostics.retireSession();
         try { OnlineSyncScheduler.cancelEnhancement(context); }
         catch (IllegalStateException unavailable) { /* Session validation still retires old work if the scheduler is unavailable. */ }
         if (!metadata.edit().putString("aiSessionEpoch", UUID.randomUUID().toString()).commit()) throw new IllegalStateException("无法保存AI会话");
@@ -230,6 +235,18 @@ public final class OnlineSyncManager {
         String preferred = selected[0], fallback = selected.length > 1 ? primary : null;
         return new OnlineClient(preferred, token, BuildConfig.DEBUG, fallback, () -> routes.failed(preferred), 10_000, 15_000);
     }
+    private void scheduleDiagnosticsUpload(JSONObject snapshot, String expectedSession) {
+        try {
+            JSONObject online = snapshot == null ? null : snapshot.optJSONObject("online");
+            if (!hasCapability(online, InteractionDiagnostics.CAPABILITY)) return;
+            String base = metadata.getString("baseUrl", "");
+            String token = secrets.read();
+            diagnostics.scheduleUpload(expectedSession, base, token, BuildConfig.DEBUG);
+        } catch (Exception ignored) {
+            // Diagnostics are best effort and never change the originating operation.
+        }
+    }
+    InteractionDiagnostics diagnosticsForTests() { return diagnostics; }
     public JSONObject status() throws Exception {
         JSONObject online = store.overview().optJSONObject("online");
         if (online == null) online = new JSONObject();
@@ -260,12 +277,17 @@ public final class OnlineSyncManager {
                 secrets.clear();
                 throw new IllegalStateException("无法保存绑定信息");
             }
+            diagnostics.startSession();
             connectionCheckedAt = 0;
             store.dispatch("syncMeta", copyFamilyScope(new JSONObject().put("bound", true).put("baseUrl", baseUrl).put("deviceId", deviceId)
                     .put("accounts", safeAccounts(response.getJSONArray("accounts"))).put("families", safeFamilies(response.optJSONArray("families"))).put("jobs", new JSONArray()).put("lastSuccessAt", 0).put("errorCode", "").put("error", ""), response));
             OnlineSyncScheduler.configure(context, true);
             return synchronize(false, null);
-        } catch (Exception failure) { return recordFailure(failure); }
+        } catch (Exception failure) {
+            JSONObject result = recordFailure(failure);
+            if (secrets.configured()) diagnostics.resumeSession();
+            return result;
+        }
     }
     public JSONObject sync(boolean force) throws Exception {
         if (force) { synchronized (this) { return synchronize(true, null); } }
@@ -297,7 +319,7 @@ public final class OnlineSyncManager {
     synchronized JSONObject syncStationEnhancement(String session) throws Exception {
         JSONObject snapshot = store.snapshot();
         if (session == null || session.isEmpty() || !session.equals(aiSessionKey()) || !enhancementEnabled(snapshot)) return snapshot;
-        return synchronize(false, null, false);
+        return synchronize(false, null, false, "enhancement");
     }
     public synchronized JSONObject refreshOrder(String id) throws Exception {
         if (id == null || id.isEmpty() || id.length() > 200)
@@ -307,6 +329,7 @@ public final class OnlineSyncManager {
     public JSONObject shipmentDetails(String id) throws Exception {
         final long generation = sessionGeneration;
         final String session = scheduledSessionKey();
+        final String diagnosticsSession = diagnostics.currentSession();
         if (session.isEmpty()) throw new OnlineClient.Failure("not_bound", "请先绑定后台再查看物流详情");
         JSONObject target = store.dispatch("shipmentDetailTarget", new JSONObject().put("id", id));
         String remoteId = target.optString("remoteId");
@@ -316,14 +339,33 @@ public final class OnlineSyncManager {
         try { token = secrets.read(); }
         catch (Exception unavailable) { throw new OnlineClient.Failure("credentials_unavailable", "设备凭证无法读取，请重新绑定"); }
         // Details do not queue behind collection, and never hold a store transaction during HTTP.
-        JSONObject result = bindingWriteClient(base, lan, identity, token)
-                .request("GET", "/v1/shipments/" + remoteId + "/logistics", null, null).body;
+        long startedAt = android.os.SystemClock.elapsedRealtime();
+        JSONObject result;
+        try {
+            OnlineClient.Response response = bindingWriteClient(base, lan, identity, token)
+                    .request("GET", "/v1/shipments/" + remoteId + "/logistics", null, null);
+            result = response.body;
+            diagnostics.recordShipmentDetail(diagnosticsSession, "success", response.status,
+                    android.os.SystemClock.elapsedRealtime() - startedAt, "request");
+        } catch (Exception failure) {
+            diagnostics.recordShipmentDetail(diagnosticsSession, "error", 0, android.os.SystemClock.elapsedRealtime() - startedAt, "request");
+            throw failure;
+        }
         if (generation != sessionGeneration || !session.equals(scheduledSessionKey()))
             throw new OnlineClient.Failure("session_changed", "后台绑定已变化，请重新展开详情");
         if (result == null || !(result.opt("shipmentId") instanceof String) || !(result.opt("orderId") instanceof String)
                 || !result.optString("evidenceKey").matches("[a-f0-9]{64}") || result.optJSONArray("logisticsEvents") == null)
             throw invalidResponse();
-        return store.dispatch("importShipmentDetails", result.put("id", id).put("bindingKey", target.getString("bindingKey")));
+        long detailImportStartedAt = android.os.SystemClock.elapsedRealtime();
+        try {
+            JSONObject imported = store.dispatch("importShipmentDetails", result.put("id", id).put("bindingKey", target.getString("bindingKey")));
+            diagnostics.recordShipmentDetail(diagnosticsSession, "success", 0, android.os.SystemClock.elapsedRealtime() - detailImportStartedAt, "import");
+            scheduleDiagnosticsUpload(store.snapshot(), diagnosticsSession);
+            return imported;
+        } catch (Exception failure) {
+            diagnostics.recordShipmentDetail(diagnosticsSession, "error", 0, android.os.SystemClock.elapsedRealtime() - detailImportStartedAt, "import");
+            throw failure;
+        }
     }
     public synchronized JSONObject proposeStation(JSONObject payload) throws Exception {
         if (!secrets.configured()) throw new OnlineClient.Failure("not_bound", "请先绑定线上服务，再提交站点关系");
@@ -344,9 +386,22 @@ public final class OnlineSyncManager {
         }
     }
     private JSONObject synchronize(boolean force, String localOrderId) throws Exception {
-        return synchronize(force, localOrderId, true);
+        return synchronize(force, localOrderId, true, localOrderId == null ? (force ? "manual" : "passive") : "order");
     }
     private JSONObject synchronize(boolean force, String localOrderId, boolean allowCollection) throws Exception {
+        return synchronize(force, localOrderId, allowCollection, localOrderId == null ? (force ? "manual" : "passive") : "order");
+    }
+    private JSONObject synchronize(boolean force, String localOrderId, boolean allowCollection, String reason) throws Exception {
+        long startedAt = android.os.SystemClock.elapsedRealtime();
+        String diagnosticsSession = diagnostics.currentSession();
+        JSONObject result = synchronizeCore(force, localOrderId, allowCollection, diagnosticsSession);
+        JSONObject online = result == null ? null : result.optJSONObject("online");
+        diagnostics.recordSync(diagnosticsSession, reason, online != null && online.optString("errorCode").isEmpty() ? "success" : "error",
+                0, android.os.SystemClock.elapsedRealtime() - startedAt, 1);
+        scheduleDiagnosticsUpload(result, diagnosticsSession);
+        return result;
+    }
+    private JSONObject synchronizeCore(boolean force, String localOrderId, boolean allowCollection, String diagnosticsSession) throws Exception {
         if (!secrets.configured()) return localOrderId == null ? store.snapshot()
                 : recordFailure(new OnlineClient.Failure("not_bound", "请先绑定线上账号，再刷新此订单"));
         try {
@@ -361,14 +416,25 @@ public final class OnlineSyncManager {
                 store.dispatch("syncMeta", new JSONObject().put("bound", true).put("baseUrl", baseUrl).put("deviceId", deviceId));
             boolean start = force || localOrderId != null;
             // Refresh authorization before reading queued operations or jobs; revoked family work must not block other families.
-            JSONObject latest = pullSnapshot(client, metadata.getInt("importVersion", 0) < IMPORT_VERSION || start);
+            JSONObject latest = pullSnapshot(client, metadata.getInt("importVersion", 0) < IMPORT_VERSION || start, diagnosticsSession);
             JSONArray queued = store.snapshot().optJSONArray("operations");
             if (queued != null) for (int offset = 0; offset < queued.length(); offset += 100) {
                 JSONArray batch = operationBatch(queued, offset);
-                JSONArray applied = client.request("POST", "/v1/operations", new JSONObject().put("operations", batch), null)
-                        .body.optJSONArray("appliedIds");
+                long operationStartedAt = android.os.SystemClock.elapsedRealtime();
+                OnlineClient.Response operationResponse;
+                try {
+                    operationResponse = client.request("POST", "/v1/operations", new JSONObject().put("operations", batch), null);
+                } catch (Exception failure) {
+                    diagnostics.recordOperations(diagnosticsSession, "error", 0,
+                            android.os.SystemClock.elapsedRealtime() - operationStartedAt, batch.length(), 0, "error");
+                    throw failure;
+                }
+                JSONArray applied = operationResponse.body.optJSONArray("appliedIds");
                 JSONArray accepted = acknowledged(batch, applied);
                 if (accepted.length() > 0) store.dispatch("syncAck", new JSONObject().put("appliedIds", accepted));
+                diagnostics.recordOperations(diagnosticsSession, accepted.length() == batch.length() ? "success" : "error", operationResponse.status,
+                        android.os.SystemClock.elapsedRealtime() - operationStartedAt, batch.length(), accepted.length(),
+                        accepted.length() == batch.length() ? "applied" : "rejected");
                 if (accepted.length() != batch.length()) throw new OnlineClient.Failure("operations_pending", "部分离线操作尚未获后台确认，请检查授权后重试");
             }
             JSONObject online = store.snapshot().optJSONObject("online");
@@ -400,7 +466,7 @@ public final class OnlineSyncManager {
             }
             // Save new task progress before the next request so a failed pull can resume it.
             if (start || poll) store.dispatch("syncMeta", new JSONObject().put("jobs", jobs));
-            if (start || poll || queued != null && queued.length() > 0) latest = pullSnapshot(client, false);
+            if (start || poll || queued != null && queued.length() > 0) latest = pullSnapshot(client, false, diagnosticsSession);
             acknowledgeStationRules(client);
             long now = System.currentTimeMillis();
             // Snapshot import may have retired an old cooldown after a newer account success.
@@ -437,7 +503,7 @@ public final class OnlineSyncManager {
         }
         return false;
     }
-    private JSONObject pullSnapshot(OnlineClient client, boolean full) throws Exception {
+    private JSONObject pullSnapshot(OnlineClient client, boolean full, String diagnosticsSession) throws Exception {
         JSONObject current = store.snapshot().getJSONObject("online");
         if (current.optBoolean("needsPickupSync")) full = true;
         if (metadata.getInt("importVersion", 0) < IMPORT_VERSION) {
@@ -446,7 +512,16 @@ public final class OnlineSyncManager {
         }
         String version = full ? "" : current.optString("dataVersion");
         String path = "/v1/snapshot?view=compact" + (version.matches("[a-f0-9]{64}") ? "&dataVersion=" + version : "");
-        OnlineClient.Response response = client.request("GET", path, null, full ? "" : metadata.getString("etag", ""));
+        long snapshotStartedAt = android.os.SystemClock.elapsedRealtime();
+        OnlineClient.Response response;
+        try {
+            response = client.request("GET", path, null, full ? "" : metadata.getString("etag", ""));
+        } catch (Exception failure) {
+            diagnostics.recordSnapshotFailure(diagnosticsSession, full, android.os.SystemClock.elapsedRealtime() - snapshotStartedAt);
+            throw failure;
+        }
+        diagnostics.recordSnapshot(diagnosticsSession, response.body != null && response.body.optBoolean("metadataOnly"), response.notModified,
+                full, response.status, android.os.SystemClock.elapsedRealtime() - snapshotStartedAt);
         if (response.notModified) return null;
         validateSnapshot(response.body);
         if (response.body.optBoolean("metadataOnly") && !version.equals(response.body.optString("dataVersion")))
@@ -459,9 +534,18 @@ public final class OnlineSyncManager {
         if (response.body.has("stationRules")) response.body.put("stationRules", safeStationRules(response.body.optJSONArray("stationRules")));
         if (response.body.has("serverLogisticsRules")) response.body.put("serverLogisticsRules", safeServerLogisticsRules(response.body.optJSONArray("serverLogisticsRules")));
         if (response.body.has("matchingFeedback")) response.body.put("matchingFeedback", safeMatchingFeedbackSummary(response.body.optJSONObject("matchingFeedback")));
-        if (response.body.optBoolean("metadataOnly"))
-            store.dispatch("syncMetadata", new JSONObject().put("meta", response.body).put("dataVersion", version).put("syncedAt", System.currentTimeMillis()));
-        else store.dispatch("syncImport", new JSONObject().put("snapshot", response.body).put("syncedAt", System.currentTimeMillis()).put("importVersion", IMPORT_VERSION));
+        long importStartedAt = android.os.SystemClock.elapsedRealtime();
+        try {
+            if (response.body.optBoolean("metadataOnly"))
+                store.dispatch("syncMetadata", new JSONObject().put("meta", response.body).put("dataVersion", version).put("syncedAt", System.currentTimeMillis()));
+            else store.dispatch("syncImport", new JSONObject().put("snapshot", response.body).put("syncedAt", System.currentTimeMillis()).put("importVersion", IMPORT_VERSION));
+            diagnostics.recordImport(diagnosticsSession, "success", android.os.SystemClock.elapsedRealtime() - importStartedAt,
+                    response.body.optJSONArray("accounts") == null ? 0 : response.body.getJSONArray("accounts").length());
+        } catch (Exception failure) {
+            diagnostics.recordImport(diagnosticsSession, "error", android.os.SystemClock.elapsedRealtime() - importStartedAt, 0);
+            diagnostics.recordSnapshotFailure(diagnosticsSession, full, android.os.SystemClock.elapsedRealtime() - snapshotStartedAt);
+            throw failure;
+        }
         // Neither an old server revision nor an unsuccessful import may advance the conditional cursor.
         if (!metadata.edit().putString("etag", response.etag).putInt("importVersion", IMPORT_VERSION).commit())
             throw new IllegalStateException("无法保存同步游标");

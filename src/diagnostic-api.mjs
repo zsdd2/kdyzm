@@ -6,7 +6,7 @@ const shipmentFields = ['id', 'accountId', 'orderId', 'platform', 'waybillNo', '
 const eventFields = ['time', 'timeText', 'timePrecision', 'description', 'location', 'provider', 'providerStatus', 'providerStatusTag', 'providerSubStatus', 'providerStatusText'];
 const taskFields = ['id', 'accountId', 'accountIds', 'orderId', 'shipmentId', 'candidateShipmentIds', 'target', 'method', 'status', 'reasonCode', 'retryCount', 'aiAttempts', 'nextRetryAt', 'createdAt', 'updatedAt'];
 
-export function createDiagnosticApi({ store, workflow }) {
+export function createDiagnosticApi({ store, workflow, interactions }) {
   const accounts = () => store.accounts().map(account => pick(account, ['id', 'platform', 'label', 'enabled', 'status', 'lastSuccessAt', 'lastFullSuccessAt', 'lastAttemptAt', 'nextSyncAt', 'error', 'warnings']));
   function orders(params) {
     const allowed = ['limit', 'after', 'query', 'platform', 'accountId'];
@@ -44,5 +44,15 @@ export function createDiagnosticApi({ store, workflow }) {
       tasks: workflow.tasks().filter(task => task.accountId === value.accountId && (task.orderId === id || shipmentIds.has(task.shipmentId))
         || (task.candidateShipmentIds || []).some(candidate => shipmentIds.has(candidate))).map(task => pick(task, taskFields)) };
   }
-  return { accounts, orders, order };
+  function interactionQuery(params) {
+    const allowed = ['limit', 'after', 'cursor', 'windowId'];
+    if ([...params.keys()].some(key => !allowed.includes(key) || params.getAll(key).length !== 1))
+      fail(400, 'INVALID_DIAGNOSTIC_QUERY', '诊断游标参数无效');
+    const number = name => {
+      const raw = params.get(name);
+      return raw === null ? undefined : Number(raw);
+    };
+    return interactions.read({ limit: number('limit'), after: number('after'), cursor: number('cursor'), windowId: params.get('windowId') ?? undefined });
+  }
+  return { accounts, orders, order, interactions: interactionQuery };
 }

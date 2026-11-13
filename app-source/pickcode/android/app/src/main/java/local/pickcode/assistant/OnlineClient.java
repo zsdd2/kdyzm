@@ -38,7 +38,11 @@ public final class OnlineClient {
         public final JSONObject body;
         public final String etag;
         public final boolean notModified;
-        Response(JSONObject body, String etag, boolean notModified) { this.body = body; this.etag = etag; this.notModified = notModified; }
+        public final int status;
+        Response(JSONObject body, String etag, boolean notModified) { this(body, etag, notModified, notModified ? 304 : 200); }
+        Response(JSONObject body, String etag, boolean notModified, int status) {
+            this.body = body; this.etag = etag; this.notModified = notModified; this.status = status;
+        }
     }
     public Response request(String method, String path, JSONObject data, String etag) throws Exception {
         if (!allowedRequest(method, path))
@@ -76,7 +80,7 @@ public final class OnlineClient {
             }
             int status = connection.getResponseCode();
             if (status == 304 && "GET".equals(method) && snapshotPath(path) && etag != null && !etag.isEmpty())
-                return new Response(null, etag, true);
+                return new Response(null, etag, true, status);
             if (status >= 300 && status < 400) throw new Failure("redirect_blocked", "同步地址发生跳转，请使用后台提供的 HTTPS 原始地址");
             if (status == 401) throw new Failure(token == null ? "binding_invalid" : "device_unauthorized",
                     token == null ? "绑定码无效或已过期，请从后台重新生成" : "设备授权已失效，请重新绑定；本地历史已保留");
@@ -111,7 +115,7 @@ public final class OnlineClient {
             JSONObject body;
             try (InputStream stream = connection.getInputStream()) { body = parse(readBounded(stream)); }
             String receivedEtag = connection.getHeaderField("ETag");
-            return new Response(body, OnlineEndpoint.validEtag(receivedEtag) ? receivedEtag : "", false);
+            return new Response(body, OnlineEndpoint.validEtag(receivedEtag) ? receivedEtag : "", false, status);
         } finally { connection.disconnect(); }
     }
     static boolean allowedRequest(String method, String path) {
@@ -121,6 +125,7 @@ public final class OnlineClient {
         if ("POST".equals(method)) return "/v1/devices".equals(path) || "/v1/pairing-codes/preview".equals(path) || "/v1/accounts/sync".equals(path)
                 || "/v1/ai/template-proposals".equals(path) || "/v1/operations".equals(path) || "/v1/station-candidates".equals(path) || "/v1/station-proposals".equals(path)
                 || "/v1/matching-feedback".equals(path) || "/v1/recognition-issues".equals(path) || "/v1/station-rule-receipts".equals(path)
+                || "/v1/device/diagnostics".equals(path)
                 || path.matches("/v1/orders/[0-9a-f]{32}/refresh");
         return "DELETE".equals(method) && "/v1/devices/current".equals(path);
     }

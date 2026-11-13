@@ -125,6 +125,55 @@ test('matching suggestions use station evidence only and remain review without c
   assert.throws(() => validateRecognitionSuggestion(bad, conflict), { code: 'AI_INVALID_RESULT' });
 });
 
+test('client conflict reasons become fixed enum evidence and hard conflicts cannot recommend a match', async t => {
+  const station = '示例花园4卡5号柜兔喜快递柜';
+  const f = fixture(t), shipment = f.ingest({ station, stationSource: 'locker' });
+  const task = f.task(shipment, 'station_match', {
+    reasonCodes: ['code_waybill_conflict', 'code_conflict', 'code_cabinet_conflict', 'code_mismatch'],
+    source: { station, pickupCode: 'PRIVATE_CODE', waybillNo: 'PRIVATE_WAYBILL', fragment: 'PRIVATE_SMS 13812345678', occurredAt: NOW - 1000 }
+  });
+  const input = f.adapter.input(task, [{ shipment }]);
+  assert.deepEqual(input.clientConflictReasons, ['code_conflict', 'code_mismatch', 'code_cabinet_conflict', 'code_waybill_conflict']);
+  assert.match(input.evidence[0].sourceId, /^client-conflict-/u);
+  assert.doesNotMatch(JSON.stringify(input), /PRIVATE|13812345678|7042/u);
+  const conflict = { version: 1, target: 'station_match', action: 'manual_check', reasonCode: 'STATION_NAME_VARIANT', candidateId: '', requiresReview: true,
+    evidence: [{ sourceId: input.evidence[0].sourceId, quote: input.evidence[0].text }] };
+  assert.throws(() => validateRecognitionSuggestion({ ...conflict, action: 'review_match', candidateId: 'candidate-1' }, input), { code: 'AI_INVALID_RESULT' });
+  assert.doesNotThrow(() => validateRecognitionSuggestion(conflict, input));
+});
+
+test('generic code conflict stays conservative alone but does not block a station-alias review', () => {
+  const candidate = { id: 'candidate-1', stationEvidenceId: 'candidate-1-station' };
+  const base = {
+    target: 'station_match',
+    candidates: [candidate],
+    evidence: [
+      { sourceId: 'source-station', text: '幸福小区东门店' },
+      { sourceId: candidate.stationEvidenceId, text: '幸福小区东门驿站' },
+    ],
+  };
+  const suggestion = {
+    version: 1, target: 'station_match', action: 'review_match', reasonCode: 'STATION_NAME_VARIANT',
+    candidateId: candidate.id, evidence: base.evidence.map(item => ({ sourceId: item.sourceId, quote: item.text })), requiresReview: true,
+  };
+  assert.throws(() => validateRecognitionSuggestion(suggestion, { ...base, clientConflictReasons: ['code_conflict'] }), { code: 'AI_INVALID_RESULT' });
+  assert.doesNotThrow(() => validateRecognitionSuggestion(suggestion, {
+    ...base, clientConflictReasons: ['code_conflict', 'code_station_conflict'],
+  }));
+});
+
+test('a changed client conflict reason gets a new AI review instead of reusing the old suggestion', async t => {
+  const f = fixture(t), shipment = f.ingest(), task = f.task(shipment, 'event_time', { reasonCodes: ['code_time_conflict'] });
+  const first = await f.adapter.analyze(task);
+  assert.equal(first.status, 'review'); assert.equal(f.calls.length, 1);
+  const changed = { ...f.workflow.task(task.id), reasonCodes: ['code_waybill_conflict'] };
+  f.workflow.save(changed);
+  const second = await f.adapter.analyze(changed);
+  assert.equal(second.status, 'review'); assert.equal(f.calls.length, 2);
+  assert.notEqual(first.reviewId, second.reviewId);
+  assert.deepEqual(f.adapter.review(second.reviewId).input.clientConflictReasons, ['code_waybill_conflict']);
+});
+
 test('actual station text formats require exact continuous quotes without normalizing cabinet numbers', () => {
   const samples = [
     ['示例花园4卡5号柜兔喜快递柜，4卡 5号柜', '示例花园4卡5号柜兔喜快递柜', '4卡 5号柜', 'locker'],

@@ -50,7 +50,9 @@ test('real Taobao collected stage gets a time only from its own unique full-trac
   assert.equal(taken.providerStatus, 'doing');
   assert.equal(taken.providerStatusTag, '已签收');
   assert.equal(taken.providerStatusText, '包裹已从代收点取出');
-  assert.equal(parcel.logisticsEvents.find(e => e.description.startsWith('待取件：')).time, ARRIVED);
+  const arrivalEvents = parcel.logisticsEvents.filter(e => e.providerStatusTag === '待取件');
+  assert.equal(arrivalEvents.length, 1, 'the duplicate UI-prefixed description retains one structured arrival stage');
+  assert.equal(arrivalEvents[0].time, ARRIVED);
 });
 
 test('refresh repairs stored undated Taobao duplicates and completes the actual shipment', async t => {

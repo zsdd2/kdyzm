@@ -4,6 +4,7 @@ import { createCollector, taobaoParcels } from '../src/collectors.mjs';
 import { normalizeLogisticsEvents } from '../src/collector-enrichment.mjs';
 import { timestamp } from '../src/collectors.mjs';
 import { Store } from '../src/store.mjs';
+import { detectPickupCompletion } from '../src/pickup-completion.mjs';
 
 const NOW = Date.parse('2026-10-31T10:00:00+08:00');
 const response = data => new Response(JSON.stringify(data));
@@ -157,6 +158,39 @@ test('events deduplicate and sort credible times before trimming while unknown t
   const bounded = normalizeLogisticsEvents(Array.from({ length: 2001 }, (_, i) => ({ time: 1793000000 + i, description: `节点${i}` })), timestamp);
   assert.equal(bounded.events[0].description, '节点1999');
   assert.equal(bounded.truncated, true);
+});
+
+test('Taobao UI stage status changes do not duplicate an otherwise identical event', () => {
+  const event = { time: '2026-10-30 09:00:00', timeText: '2026-10-30 09:00:00', description: '包裹运输中', location: '', provider: 'taobao', providerStatusTag: '运输中', providerStatusText: '包裹运输中' };
+  const normalized = normalizeLogisticsEvents([
+    { ...event, providerStatus: 'waitdo' },
+    { ...event, providerStatus: 'doing' },
+    { ...event, providerStatus: 'done' },
+  ], timestamp);
+  assert.equal(normalized.events.length, 1);
+  assert.equal(normalized.events[0].providerStatus, 'waitdo');
+  const pdd = normalizeLogisticsEvents([
+    { ...event, provider: 'pdd', providerStatus: 'WAIT' },
+    { ...event, provider: 'pdd', providerStatus: 'DONE' },
+  ], timestamp);
+  assert.equal(pdd.events.length, 2);
+  const unknownTaobao = normalizeLogisticsEvents([
+    { ...event, providerStatus: 'waitdo' },
+    { ...event, providerStatus: 'paused' },
+  ], timestamp);
+  assert.equal(unknownTaobao.events.length, 2);
+});
+
+test('Taobao deduplication preserves conflicting and corroborating pickup completion states in either order', () => {
+  const event = { time: NOW - 60000, timeText: '2026-10-31 09:59:00', timePrecision: 'second', description: '已签收：包裹已从代收点取出',
+    provider: 'taobao', providerStatusTag: '已签收', providerStatusText: '包裹已从代收点取出' };
+  for (const statuses of [['doing', 'waitdo'], ['waitdo', 'doing'], ['done', 'doing'], ['doing', 'done']]) {
+    const events = statuses.map(providerStatus => ({ ...event, providerStatus }));
+    const expected = detectPickupCompletion({ logisticsEvents: events }, { now: NOW });
+    const normalized = normalizeLogisticsEvents(events, timestamp, [], NOW).events;
+    assert.equal(normalized.length, 2, statuses.join(','));
+    assert.deepEqual(detectPickupCompletion({ logisticsEvents: normalized }, { now: NOW }), expected, statuses.join(','));
+  }
 });
 
 test('Taobao nonempty SSR still supplements full ascending PC track and preserves SSR when fallback fails', async () => {

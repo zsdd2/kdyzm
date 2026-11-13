@@ -2,6 +2,14 @@
   <view class="changelog-container sf-page">
     <view class="version-list" :class="{ expanded: showOlder }">
       <view class="version-item sf-surface">
+        <view class="version-header"><text class="version-name">v3.2.1 · 私人版</text><text class="version-date">2026-11-13</text></view>
+        <view class="update-list">
+          <view class="update-item"><text class="tag fix">淘宝</text><text class="content">分包轨迹独立排序，缺少年份默认沿用订单年份，年底跨年单独处理，柜号和取件码分开识别</text></view>
+          <view class="update-item"><text class="tag optimize">匹配</text><text class="content">优先核对平台取件码，同码信息冲突保留待核对，经重试后辅助识别</text></view>
+          <view class="update-item"><text class="tag feature">诊断</text><text class="content">自动记录脱敏同步诊断，便于排查手机与后台交互问题</text></view>
+        </view>
+      </view>
+      <view class="version-item sf-surface">
         <view class="version-header"><text class="version-name">v3.2.0 · 私人版</text><text class="version-date">2026-11-13</text></view>
         <view class="update-list">
           <view class="update-item"><text class="tag feature">同步</text><text class="content">后台统一整理订单、站点和物流时间，手机负责短信匹配、确认与显示</text></view>
