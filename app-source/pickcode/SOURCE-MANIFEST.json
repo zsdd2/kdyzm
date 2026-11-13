@@ -612,8 +612,8 @@
     },
     {
       "path": "pages/my/changelog.vue",
-      "size": 50613,
-      "sha256": "78240b39eef3c34d94907bff2b9a6d58f3d26d62ba2b1b3ed9508286b1eda489"
+      "size": 50607,
+      "sha256": "29f47376c6ecb24c459916ae86ac570aa873adca5dcafbb9fd060c45f15c1a3f"
     },
     {
       "path": "pages/my/faq.vue",

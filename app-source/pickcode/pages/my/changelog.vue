@@ -2,7 +2,7 @@
   <view class="changelog-container sf-page">
     <view class="version-list" :class="{ expanded: showOlder }">
       <view class="version-item sf-surface">
-        <view class="version-header"><text class="version-name">v3.2.0 · 分支内测版</text><text class="version-date">2026-11-13</text></view>
+        <view class="version-header"><text class="version-name">v3.2.0 · 私人版</text><text class="version-date">2026-11-13</text></view>
         <view class="update-list">
           <view class="update-item"><text class="tag feature">同步</text><text class="content">后台统一整理订单、站点和物流时间，手机负责短信匹配、确认与显示</text></view>
           <view class="update-item"><text class="tag optimize">效率</text><text class="content">扫描短信独立执行；物流详情展开时加载，未变化的订单不重复传输</text></view>
