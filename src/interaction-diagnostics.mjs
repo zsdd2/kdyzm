@@ -23,6 +23,9 @@ const modes = new Set(['compact', 'full']);
 const ackResults = new Set(['applied', 'already_applied', 'rejected', 'conflict', 'error']);
 const phases = new Set(['request', 'import', 'sync', 'session']);
 const triggers = new Set(['manual', 'passive', 'order', 'enhancement']);
+const stages = new Set(['sync', 'request', 'validation', 'import', 'store_lock', 'database_read', 'upgrade_backup', 'core_init', 'core_execute', 'json', 'projection', 'persistence', 'cursor_commit', 'ack']);
+const errorCodes = new Set(['none', 'network', 'unauthorized', 'invalid_response', 'stale_snapshot', 'stage_failed', 'cursor_failed', 'ack_rejected', 'collection_failed', 'credentials_unavailable', 'unavailable']);
+const v2Fields = ['operationId', 'appBuild', 'dataVersion', 'stage', 'errorCode', 'durationCapped', 'failureSummary', 'failureCapacity', 'failureRetained', 'failureDropped'];
 
 const integer = (value, min, max) => Number.isSafeInteger(value) && value >= min && value <= max;
 const optionalInteger = (value, min, max) => value === undefined || integer(value, min, max);
@@ -30,7 +33,7 @@ const optionalEnum = (value, allowed) => value === undefined || allowed.has(valu
 
 function validateEvent(value, { client = false } = {}) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) fail(400, 'INVALID_INPUT', '诊断事件格式不正确');
-  const allowed = ['kind', 'result', 'status', 'durationMs', 'count', 'mode', 'metadataOnly', 'ackCount', 'ackResult', 'phase', 'trigger', 'ageMs'];
+  const allowed = ['kind', 'result', 'status', 'durationMs', 'count', 'mode', 'metadataOnly', 'ackCount', 'ackResult', 'phase', 'trigger', 'ageMs', ...v2Fields];
   if (client) onlyKeys(value, allowed);
   if (!interactionKinds.includes(value.kind) || !optionalEnum(value.result, results)
     || !optionalInteger(value.status, 100, MAX_STATUS)
@@ -42,7 +45,16 @@ function validateEvent(value, { client = false } = {}) {
     || !optionalInteger(value.ageMs, 0, 604800000)
     || !optionalEnum(value.phase, phases)
     || !optionalEnum(value.trigger, triggers)
-    || !optionalEnum(value.ackResult, ackResults)) {
+    || !optionalEnum(value.ackResult, ackResults)
+    || (value.operationId !== undefined && (typeof value.operationId !== 'string' || !/^[a-f0-9]{32}$/.test(value.operationId)))
+    || !optionalInteger(value.appBuild, 1, 2147483647)
+    || (value.dataVersion !== undefined && (typeof value.dataVersion !== 'string' || !/^[a-f0-9]{64}$/.test(value.dataVersion)))
+    || !optionalEnum(value.stage, stages) || !optionalEnum(value.errorCode, errorCodes)
+    || (value.durationCapped !== undefined && (typeof value.durationCapped !== 'boolean' || value.durationCapped && value.durationMs !== MAX_DURATION_MS))
+    || (value.failureSummary !== undefined && (typeof value.failureSummary !== 'boolean' || value.failureSummary && (value.result !== 'error' || !value.operationId || value.kind !== 'sync_job' || !value.stage || !value.errorCode || value.errorCode === 'none')))
+    || !optionalInteger(value.failureCapacity, 1, 128)
+    || !optionalInteger(value.failureRetained, 0, 128)
+    || !optionalInteger(value.failureDropped, 0, MAX_COUNT)) {
     fail(400, 'INVALID_INPUT', '诊断事件包含无效字段');
   }
   return {
@@ -57,7 +69,8 @@ function validateEvent(value, { client = false } = {}) {
     ...(value.phase === undefined ? {} : { phase: value.phase }),
     ...(value.trigger === undefined ? {} : { trigger: value.trigger }),
     ...(value.ageMs === undefined ? {} : { ageMs: value.ageMs }),
-    ...(value.ackResult === undefined ? {} : { ackResult: value.ackResult })
+    ...(value.ackResult === undefined ? {} : { ackResult: value.ackResult }),
+    ...Object.fromEntries(v2Fields.filter(key => value[key] !== undefined).map(key => [key, value[key]]))
   };
 }
 
@@ -69,6 +82,8 @@ export function createInteractionDiagnostics({ now = Date.now, capacity = DEFAUL
   let nextSeq = 1;
   let total = 0;
   let dropped = 0;
+  // This shares the event window's bound; retries never count the same retained operation twice.
+  const failureKeys = new Set();
 
   const deviceKey = deviceId => deviceId ? hash(`${salt}:${deviceId}`).slice(0, 12) : undefined;
   const append = (event, source, deviceId) => {
@@ -81,8 +96,13 @@ export function createInteractionDiagnostics({ now = Date.now, capacity = DEFAUL
         ...(deviceId ? { deviceKey: deviceKey(deviceId) } : {})
       };
       total++;
-      if (events.length >= capacity) { events.shift(); dropped++; }
+      if (events.length >= capacity) {
+        const removed = events.shift();
+        if (removed.failureSummary) failureKeys.delete(`${removed.deviceKey}:${removed.operationId}`);
+        dropped++;
+      }
       events.push(entry);
+      if (entry.failureSummary) failureKeys.add(`${entry.deviceKey}:${entry.operationId}`);
       return entry;
     } catch {
       return null;
@@ -95,7 +115,8 @@ export function createInteractionDiagnostics({ now = Date.now, capacity = DEFAUL
     recordClient(deviceId, input) {
       if (!Array.isArray(input) || input.length < 1 || input.length > MAX_BATCH) fail(400, 'INVALID_INPUT', '诊断事件批次不正确');
       const normalized = input.map(value => validateEvent(value, { client: true }));
-      return { accepted: normalized.map(event => append(event, 'device', deviceId)).filter(Boolean).length };
+      return { accepted: normalized.filter(event => event.failureSummary && failureKeys.has(`${deviceKey(deviceId)}:${event.operationId}`)
+        || append(event, 'device', deviceId)).length };
     },
     recordServer(event, deviceId) {
       try {

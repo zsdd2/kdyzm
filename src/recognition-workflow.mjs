@@ -36,18 +36,20 @@ export function recognitionMethod(platform, target) {
   const source = ['taobao', 'pdd', 'jd'].includes(platform) ? platform : 'other';
   return { platform: source, contentKind: target === 'station_match' ? 'pickup_match' : 'logistics', target,
     methodId: `${source}.${target === 'arrival_time' ? 'arrival_evidence' : target === 'event_time' ? 'event_timestamp' : target === 'station_match' ? 'station_identity' : 'order_detail'}`,
-    methodVersion: 1 };
+    methodVersion: target === 'arrival_time' ? 2 : 1 };
 }
 
-export function recognitionProblems(shipment, now, rules) {
+export function recognitionProblems(shipment, now, rules, platformView) {
   const events = Array.isArray(shipment.logisticsEvents) ? shipment.logisticsEvents : [];
   const problems = [];
   if (['error', 'empty', 'unavailable'].includes(shipment.logisticsState)) problems.push({ target: 'logistics_detail', reasonCode: 'DETAIL_UNAVAILABLE' });
   const timeIssues = events.map(event => logisticsEventTimeIssue(event, now));
   if (timeIssues.some(Boolean)) problems.push({ target: 'event_time', reasonCode: timeIssues.includes('timeConflict') ? 'TIME_CONFLICT' : 'TIME_UNKNOWN' });
   const arrived = shipment.status === 'arrived' || events.some(event => pickupArrivalEvent(event.description, '', rules) || missedArrival(event, now));
-  if (arrived && (!validTime(shipment.arrivalAt, now) || !['platform_event', 'locker_arrival'].includes(shipment.arrivalAtSource)
-    || !['second', 'minute'].includes(shipment.arrivalAtPrecision))) problems.push({ target: 'arrival_time', reasonCode: 'ARRIVAL_UNCONFIRMED' });
+  const arrival = platformView || shipment;
+  if (arrived && (!validTime(arrival.arrivalAt, now) || !['platform_event', 'locker_arrival'].includes(arrival.arrivalAtSource)
+    || !['second', 'minute'].includes(arrival.arrivalAtPrecision))) problems.push({ target: 'arrival_time',
+      reasonCode: platformView?.quality?.arrivalTime?.reasonCode === 'STATION_CONFLICT' ? 'STATION_CONFLICT' : 'ARRIVAL_UNCONFIRMED' });
   return problems;
 }
 
@@ -124,7 +126,7 @@ export class RecognitionWorkflow {
     if (scope.blocked || scope.partlyBlocked) return this.save({ ...task, status: 'blocked', resumeStatus: task.status === 'blocked' ? task.resumeStatus : task.status,
       reasonCode: scope.partlyBlocked ? 'ACCOUNT_UNAVAILABLE' : scope.reasonCode, nextRetryAt: this.now() + 5 * MINUTE });
     const result = task.contentKind === 'pickup_match' ? this.evaluateReport?.(task) : {
-      resolved: !recognitionProblems(scope.shipment, this.now(), this.store.getLogisticsRules?.()).some(problem => problem.target === task.target),
+      resolved: !recognitionProblems(scope.shipment, this.now(), this.store.getLogisticsRules?.(), this.store.shipmentView?.(scope.shipment)).some(problem => problem.target === task.target),
     };
     if (result?.closed || result?.resolved) return this.save({ ...task, status: result.closed ? 'ignored' : 'resolved', reasonCode: result.closed ? 'SOURCE_INACTIVE' : 'DETERMINISTIC_MATCH', nextRetryAt: 0 });
     if (task.status === 'blocked') return this.save({ ...task, status: task.resumeStatus || (task.retryCount >= 3 ? 'ai_pending' : 'pending'), nextRetryAt: this.now(), reasonCode: task.problemCode });
@@ -166,7 +168,7 @@ export class RecognitionWorkflow {
       const scope = this.scope(input.id);
       for (const task of this.db.prepare("SELECT data FROM recognition_tasks WHERE json_extract(data,'$.shipmentId')=? AND json_extract(data,'$.status') NOT IN ('resolved','ignored')").all(input.id).map(parse)) this.reevaluate(task);
       if (scope.closed) continue;
-      for (const problem of recognitionProblems(scope.shipment, this.now(), this.store.getLogisticsRules?.())) if (this.upsert(scope, problem)) observed++;
+      for (const problem of recognitionProblems(scope.shipment, this.now(), this.store.getLogisticsRules?.(), this.store.shipmentView?.(scope.shipment))) if (this.upsert(scope, problem)) observed++;
     }
     this.schedule(); return { observed };
   }

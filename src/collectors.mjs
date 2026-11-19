@@ -269,6 +269,8 @@ async function collectTaobao(cookie, { fetchImpl, now, maxPages, knownOrders = [
   const known = new Map(knownOrders.map(order => [asText(order.platformOrderId), order]));
   const knownParcels = id => activeKnownParcels(known.get(id));
   const logisticsOrders = [];
+  const collectionCoverage = { version: 1, scope: 'active_orders', status: targetOrder ? 'targeted' : 'complete',
+    reason: targetOrder ? 'targeted' : 'end', pagesRead: 0, pageLimit: maxPages, seenOrders: 0, activeOrders: 0, trackedOutsideWindow: 0 };
   let dateBudget = 10;
   let skippedCount = 0;
   const dateAttempted = new Set();
@@ -370,6 +372,7 @@ async function collectTaobao(cookie, { fetchImpl, now, maxPages, knownOrders = [
     }
     for (let page = 1; page <= maxPages; page++) {
       const data = await mtop(session, { tabCode: 'all', page: String(page), orderType: 'OrderList', templateConfigVersion: '0', appName: 'tborder', appVersion: '3.0', condition: '{"version":"1.0.0","appChannel":""}', ttid: '201200@taobao_h5_9.18.0', requestIdentity: '#t#ip#h5' });
+      collectionCoverage.pagesRead = page;
       const inner = typeof data.result === 'string' ? json(data.result) : data.result || data.data;
       if (!Array.isArray(inner?.mainOrders)) throw new CollectorError('UPSTREAM_FORMAT', '淘宝订单字段已变化，保留上次数据');
       if (!inner.mainOrders.length) break;
@@ -394,10 +397,12 @@ async function collectTaobao(cookie, { fetchImpl, now, maxPages, knownOrders = [
         if (kind === 'to_ship') continue;
         logisticsOrders.push(platformOrderId);
       }
-      if (!newCount) { warnings.push('平台分页重复，停止本轮采集并保留已有记录'); break; }
-      if (page === maxPages) warnings.push('已达到分页上限；缺席订单不会标记为已取或删除');
+      if (!newCount) { Object.assign(collectionCoverage, { status: 'partial', reason: 'repeated_page' }); warnings.push('平台分页重复，停止本轮采集并保留已有记录'); break; }
+      if (page === maxPages) { Object.assign(collectionCoverage, { status: 'partial', reason: 'page_limit' }); warnings.push('已达到分页上限；缺席订单不会标记为已取或删除'); }
     }
-    for (const order of activeKnownOrders(knownOrders, seen, knownOrders.length)) logisticsOrders.push(asText(order.platformOrderId));
+    const outsideWindow = activeKnownOrders(knownOrders, seen, knownOrders.length);
+    collectionCoverage.trackedOutsideWindow = outsideWindow.length;
+    for (const order of outsideWindow) logisticsOrders.push(asText(order.platformOrderId));
   }
   async function collectComplete({ platformOrderId }) {
     const attempt = interruption;
@@ -515,7 +520,8 @@ async function collectTaobao(cookie, { fetchImpl, now, maxPages, knownOrders = [
   for (const id of new Set(logisticsOrders)) shipments.push(...byOrder.get(id).shipments);
   for (const item of candidates) if (!logisticsOrders.includes(item.platformOrderId)) shipments.push(...byOrder.get(item.platformOrderId).shipments);
   if (skippedCount) warnings.push(`订单筛选：本轮保留${orders.length}笔，跳过${skippedCount}笔已结束或非待收货订单`);
-  return { orders, shipments, orderUpdates, logisticsFailures, warnings: [...new Set(warnings)], refreshedCookie: session.cookie };
+  Object.assign(collectionCoverage, { seenOrders: seen.size, activeOrders: new Set([...orders.map(order => order.platformOrderId), ...logisticsOrders]).size });
+  return { orders, shipments, orderUpdates, logisticsFailures, collectionCoverage, warnings: [...new Set(warnings)], refreshedCookie: session.cookie };
 }
 
 function pddCheck(value) {

@@ -262,3 +262,43 @@ test('station automatic queue honors the callback while explicit manual analysis
   assert.equal(jobs.request().accepted, true); await jobs.running; assert.equal(calls.length, 1);
   await jobs.close();
 });
+
+for (const [category, mutation, target = 'event_time'] of [
+  ['JSON_PARSE', () => ({ choices: [{ message: { content: '{PRIVATE_REJECTED_TEXT' } }] })],
+  ['SCHEMA_FIELDS', good => reply({ ...good, PRIVATE_FIELD_NAME: 'PRIVATE_REJECTED_TEXT' })],
+  ['TYPE_MISMATCH', good => reply({ ...good, requiresReview: 'PRIVATE_REJECTED_TEXT' })],
+  ['ENUM_MISMATCH', good => reply({ ...good, action: 'PRIVATE_REJECTED_TEXT' })],
+  ['CANDIDATE_NOT_FOUND', good => reply({ ...good, candidateId: 'PRIVATE_REJECTED_TEXT' }), 'station_match'],
+  ['EVIDENCE_NOT_IN_INPUT', good => reply({ ...good, evidence: [{ sourceId: 'PRIVATE_FIELD_NAME', quote: 'PRIVATE_REJECTED_TEXT' }] })],
+  ['HARD_CONFLICT', good => reply(good), 'station_match'],
+]) test(`AI invalid result stores only the safe ${category} classification and reuses it`, async t => {
+  const f = fixture(t, { request: input => {
+    const good = target === 'station_match' ? { version: 1, target, action: 'review_match', reasonCode: 'STATION_NAME_VARIANT',
+      candidateId: 'candidate-1', evidence: input.evidence.slice(0, 5).map(item => ({ sourceId: item.sourceId, quote: item.text })), requiresReview: true } : timeSuggestion(input);
+    return mutation(good);
+  } });
+  const shipment = f.ingest({ station: STATION, stationSource: 'locker' });
+  const task = f.task(shipment, target, target === 'station_match' ? { candidateShipmentIds: [shipment.id], source: { station: STATION },
+    ...(category === 'HARD_CONFLICT' ? { reasonCodes: ['code_cabinet_conflict'] } : {}) } : {});
+  const result = await f.adapter.analyze(task), saved = f.adapter.review(result.reviewId);
+  assert.equal(saved.reasonCode, 'AI_INVALID_RESULT');
+  assert.equal(saved.validationFailure.category, category);
+  assert.equal(saved.suggestion, null);
+  assert.doesNotMatch(JSON.stringify(saved), /PRIVATE_REJECTED_TEXT|PRIVATE_FIELD_NAME/u);
+  const allowed = ['version', 'target', 'action', 'reasonCode', 'candidateId', 'evidence', 'requiresReview', 'evidence.sourceId', 'evidence.quote'];
+  assert.ok(saved.validationFailure.fields.every(field => allowed.includes(field)));
+  assert.deepEqual(await f.adapter.analyze(task), result);
+  assert.equal(f.calls.length, 1); assert.equal(f.stations.aiConfig().usageToday, 1);
+  assert.equal(f.stations.aiConfig().autoApply, false);
+});
+
+test('AI rejection identifies missing safe fields and nested type fields without retaining arbitrary keys', () => {
+  const input = { target: 'event_time', evidence: [{ sourceId: 'e1', text: '11月9日 10:30' }], candidates: [] }, good = timeSuggestion(input);
+  const missing = { ...good }; delete missing.requiresReview;
+  assert.throws(() => validateRecognitionSuggestion(missing, input), error => {
+    assert.deepEqual(error.validationFailure, { category: 'SCHEMA_FIELDS', fields: ['requiresReview'] }); return true;
+  });
+  assert.throws(() => validateRecognitionSuggestion({ ...good, evidence: [{ sourceId: 1, quote: '11月9日' }] }, input), error => {
+    assert.deepEqual(error.validationFailure, { category: 'TYPE_MISMATCH', fields: ['evidence.sourceId'] }); return true;
+  });
+});

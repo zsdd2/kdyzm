@@ -5,6 +5,7 @@ import android.content.Context;
 import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
 import android.database.sqlite.SQLiteOpenHelper;
+import android.database.sqlite.SQLiteStatement;
 import android.content.SharedPreferences;
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -27,6 +28,7 @@ public final class AssistantStore extends SQLiteOpenHelper {
     private final CoreEngine engine;
     private volatile String snapshotCache;
     private volatile long snapshotCachedAt;
+    private long projectionAt;
     private volatile DisplayCache displayCache;
 
     private static final class DisplayCache {
@@ -78,15 +80,16 @@ public final class AssistantStore extends SQLiteOpenHelper {
         if (saved != null) return saved;
         synchronized (this) {
             if (displayCache != null) return displayCache;
-            try (Cursor row = getReadableDatabase().rawQuery("SELECT snapshot,overview FROM assistant_display WHERE id=1", null)) {
-                if (row.moveToFirst()) {
+            SQLiteDatabase db = getReadableDatabase();
+            String savedSnapshot = scalarText(db, "SELECT COALESCE((SELECT snapshot FROM assistant_display WHERE id=1),'')");
+            if (!savedSnapshot.isEmpty()) {
                     try {
-                        JSONObject summary = new JSONObject(row.getString(1));
+                        String savedOverview = scalarText(db, "SELECT COALESCE((SELECT overview FROM assistant_display WHERE id=1),'')");
+                        JSONObject summary = new JSONObject(savedOverview);
                         if (summary.has("stats") && summary.has("online")) {
-                            displayCache = new DisplayCache(row.getString(0), row.getString(1));
+                            displayCache = new DisplayCache(savedSnapshot, savedOverview);
                         }
                     } catch (org.json.JSONException invalid) { /* Rebuild a damaged derived cache from the original state. */ }
-                }
             }
             if (displayCache == null) snapshot();
             return displayCache;
@@ -121,61 +124,88 @@ public final class AssistantStore extends SQLiteOpenHelper {
         return true;
     }
 
-    public synchronized JSONObject dispatch(String action, JSONObject payload) throws Exception {
-        if ("snapshot".equals(action) && snapshotCache != null
-                && android.os.SystemClock.elapsedRealtime() - snapshotCachedAt < 1_000) return new JSONObject(snapshotCache);
-        return commitCommand(action, payload, null);
+    public JSONObject dispatch(String action, JSONObject payload) throws Exception {
+        return dispatch(action, payload, null);
+    }
+
+    public JSONObject dispatch(String action, JSONObject payload, CoreEngine.PhaseObserver observer) throws Exception {
+        long waitingAt = System.nanoTime();
+        synchronized (this) {
+            CoreEngine.phase(observer, "store_lock", waitingAt, true);
+            if ("snapshot".equals(action) && snapshotCache != null
+                    && android.os.SystemClock.elapsedRealtime() - snapshotCachedAt < 1_000) return new JSONObject(snapshotCache);
+            return commitCommand(action, payload, null, observer);
+        }
     }
 
     /** Confirmation commits the rule and its original SMS together, so a failed ingest is retryable. */
     public synchronized JSONObject saveRuleAndIngest(JSONObject rule, JSONObject sourceMessage) throws Exception {
-        return commitCommand("saveRule", new JSONObject().put("rule", rule), sourceMessage);
+        return commitCommand("saveRule", new JSONObject().put("rule", rule), sourceMessage, null);
     }
 
-    private JSONObject commitCommand(String action, JSONObject payload, JSONObject sourceMessage) throws Exception {
-        snapshotCache = null;
-        SQLiteDatabase db = getWritableDatabase();
-        db.beginTransaction();
+    private interface Measured<T> { T run() throws Exception; }
+    // A single JSON state/display row can exceed Android's CursorWindow size.
+    private static String scalarText(SQLiteDatabase db, String sql) {
+        try (SQLiteStatement statement = db.compileStatement(sql)) { return statement.simpleQueryForString(); }
+    }
+    private static <T> T measure(CoreEngine.PhaseObserver observer, String phase, Measured<T> operation) throws Exception {
+        long startedAt = System.nanoTime(); boolean success = false;
+        try { T value = operation.run(); success = true; return value; }
+        finally { CoreEngine.phase(observer, phase, startedAt, success); }
+    }
+
+    private JSONObject commitCommand(String action, JSONObject payload, JSONObject sourceMessage, CoreEngine.PhaseObserver observer) throws Exception {
+        SQLiteDatabase db = measure(observer, "database_read", () -> getWritableDatabase());
+        measure(observer, "database_read", () -> { db.beginTransaction(); return null; });
         JSONObject result;
         DisplayCache nextDisplay;
+        boolean projectionReusable;
         try {
-            String state = "";
-            try (Cursor row = db.rawQuery("SELECT payload FROM assistant_state WHERE id=1", null)) {
-                if (row.moveToFirst()) state = row.getString(0);
-            }
-            backupBeforeUpgrade(state);
+            String state = measure(observer, "database_read", () -> scalarText(db,
+                    "SELECT COALESCE((SELECT payload FROM assistant_state WHERE id=1),'')"));
+            measure(observer, "upgrade_backup", () -> { backupBeforeUpgrade(state); return null; });
             JSONObject request = new JSONObject().put("action", action).put("payload", payload);
-            JSONObject output = new JSONObject(engine.dispatch(state, request.toString()));
+            String committed = snapshotCache != null && ("syncMeta".equals(action) || "syncMetadata".equals(action))
+                    ? new JSONObject().put("at", projectionAt).put("snapshot", new JSONObject(snapshotCache)).toString() : null;
+            String raw = engine.dispatch(state, request.toString(), committed, observer);
+            JSONObject output = measure(observer, "json", () -> new JSONObject(raw));
             if (sourceMessage != null) {
                 JSONObject nextState = output.getJSONObject("state");
                 JSONObject ingest = new JSONObject().put("action", "ingest").put("payload", new JSONObject()
                         .put("messages", new JSONArray().put(sourceMessage)).put("scannedAt", nextState.optLong("lastScanAt")));
-                output = new JSONObject(engine.dispatch(nextState.toString(), ingest.toString()));
+                String ingested = engine.dispatch(nextState.toString(), ingest.toString(), null, observer);
+                output = measure(observer, "json", () -> new JSONObject(ingested));
             }
             result = output.getJSONObject("result");
-            if (state.isEmpty() || !"snapshot".equals(action)) {
-                ContentValues values = new ContentValues();
-                values.put("id", 1);
-                values.put("payload", output.getJSONObject("state").toString());
-                db.replaceOrThrow("assistant_state", null, values);
-            }
+            projectionReusable = state.isEmpty() || !"snapshot".equals(action);
             long revision = 1;
             try (Cursor previous = db.rawQuery("SELECT revision FROM assistant_display WHERE id=1", null)) {
                 if (previous.moveToFirst()) revision = previous.getLong(0) + 1;
             }
-            nextDisplay = displayValue(result, revision);
-            if (nextDisplay != null) {
-                ContentValues cached = new ContentValues();
-                cached.put("id", 1); cached.put("snapshot", nextDisplay.snapshot); cached.put("overview", nextDisplay.overview); cached.put("revision", revision);
-                db.replaceOrThrow("assistant_display", null, cached);
-            }
-            db.setTransactionSuccessful();
-        } finally { db.endTransaction(); }
+            final long nextRevision = revision;
+            nextDisplay = measure(observer, "projection", () -> displayValue(result, nextRevision));
+            final JSONObject committedOutput = output;
+            measure(observer, "persistence", () -> {
+                if (state.isEmpty() || !"snapshot".equals(action)) {
+                    ContentValues values = new ContentValues(); values.put("id", 1);
+                    values.put("payload", committedOutput.getJSONObject("state").toString());
+                    db.replaceOrThrow("assistant_state", null, values);
+                }
+                if (nextDisplay != null) {
+                    ContentValues cached = new ContentValues();
+                    cached.put("id", 1); cached.put("snapshot", nextDisplay.snapshot); cached.put("overview", nextDisplay.overview); cached.put("revision", nextRevision);
+                    db.replaceOrThrow("assistant_display", null, cached);
+                }
+                db.setTransactionSuccessful(); return null;
+            });
+        } finally { measure(observer, "persistence", () -> { db.endTransaction(); return null; }); }
         // Publish only committed state, and never expose a mutable shared JSONObject to callers.
+        snapshotCache = null;
         if (nextDisplay != null) {
             displayCache = nextDisplay;
             snapshotCache = nextDisplay.snapshot;
             snapshotCachedAt = android.os.SystemClock.elapsedRealtime();
+            projectionAt = projectionReusable ? System.currentTimeMillis() : 0;
         }
         return result;
     }

@@ -42,7 +42,7 @@ test('Taobao replacement SSR minute labels use this order detail interval, never
 });
 
 const shippingStage = subtitle => ({ title: '已发货', subtitle, labelDesc: { text: '包裹正在等待揽收' } });
-const summary = result => result.shipments[0].logisticsEvents.find(event => event.provider === 'taobao');
+const summary = result => result.shipments[0].logisticsEvents.find(event => event.providerStatusTag === '已发货');
 
 test('Taobao order year resolves late December rollover and leap days in that year', async () => {
   for (const [date, now, label, expected] of [

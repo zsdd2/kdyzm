@@ -48,7 +48,21 @@ Invoke-RestMethod -Uri "$env:PICKCODE_BASE_URL/v1/diagnostics/status" -Headers $
 
 `POST /v1/device/diagnostics` 仅接受设备 Bearer 令牌，最多 50 条事件；成功返回 `202 { "accepted": 1 }`。`kind` 必须是 `snapshot`、`shipment_detail`、`operations`、`sync_job`、`accounts`、`feedback`、`recognition` 或 `other_device`；结果、数字、模式和 ACK 字段均有固定枚举及范围。未知字段、任意字符串、负数、超范围数字和空/过大的批次返回 400。只读诊断凭据不能调用此写入接口。
 
-`phase` 区分 `request`、`import`、`sync` 和 `session`，同步的 `trigger` 区分 `manual`、`passive`、`order` 和 `enhancement`。手机批量上报的 `ageMs` 是事件产生至发送经过的毫秒数（最多 7 天），后台 `time` 是接收时刻，两者用于近似还原顺序，不能视为精确跨设备时钟。设备上报每分钟最多 6 次；手机上传至少间隔 30 秒。两端日志均有容量上限且重启清空，尚未升级的手机无法回传日志。
+`phase` 区分 `request`、`import`、`sync` 和 `session`，同步的 `trigger` 区分 `manual`、`passive`、`order` 和 `enhancement`。手机批量上报的 `ageMs` 是事件产生至发送经过的毫秒数（最多 7 天），后台 `time` 是接收时刻，两者用于近似还原顺序，不能视为精确跨设备时钟。设备上报每分钟最多 6 次；手机上传至少间隔 30 秒。后台日志与手机普通事件重启清空，尚未升级的手机无法回传日志。
+
+后台快照声明 `interaction_diagnostics_v2` 后，手机才上传以下扩展字段；只有 v1 能力时仍发送旧字段，待补报的失败摘要保留在本机：
+
+| 字段 | 取值与含义 |
+| --- | --- |
+| `operationId` | 每轮同步随机产生的 32 位小写十六进制 ID；请求、导入、阶段耗时、ACK 和同步汇总共享该值，不来自业务标识 |
+| `appBuild` / `dataVersion` | App 构建号（1–2147483647）；可选的 64 位十六进制实体版本 |
+| `stage` | `sync`、`request`、`validation`、`import`、`store_lock`、`database_read`、`upgrade_backup`、`core_init`、`core_execute`、`json`、`projection`、`persistence`、`cursor_commit`、`ack` |
+| `errorCode` | `none`、`network`、`unauthorized`、`invalid_response`、`stale_snapshot`、`stage_failed`、`cursor_failed`、`ack_rejected`、`collection_failed`、`credentials_unavailable`、`unavailable`；不读取异常消息 |
+| `durationCapped` | 达到 120000ms 记录上限时为 `true`；此时 `durationMs` 只表示至少达到上限 |
+| `failureSummary` | 仅同步失败汇总为 `true`，每轮仅一条；跨层阶段错误不作为独立故障计数 |
+| `failureCapacity` / `failureRetained` / `failureDropped` | 手机失败摘要队列容量（当前 16）、待补报条数与累计溢出丢弃量（最多记录 10000） |
+
+手机持久化最多 16 条已完成失败摘要，重启后补报，成功 ACK 后删除，换绑/撤权时清空。只保存上述固定元数据和用于计算年龄的本机时间，不保存业务载荷或异常消息。成功事件不落入此队列；没有同步完成不能据此推断为崩溃。汇总保留第一个失败阶段；阶段样本可能多次出现（例如数据库读取和提交），可按同一关联 ID 分析。后台在当前保留窗口内对同一设备与 `operationId` 的失败摘要重试去重，并将重复项计入 `accepted`，防止客户端重复补报。服务重启或事件被窗口淘汰后，消费者仍需按关联 ID 去重。
 
 凭据管理仍需要管理员权限（`x-admin-token`），可直接调用，无需操作网页：
 

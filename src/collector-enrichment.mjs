@@ -162,7 +162,7 @@ export function taobaoTimeAnchorCandidate(event) {
     && !hardUnsafe
     && !completionKind(event.description)
     && !pickupCycleReset(event.description)
-    && (shippingEvent(event.description) || ['已下单', '仓库处理中'].includes(event.providerStatusTag) || operational && !uncertainOperational)
+    && (shippingEvent(event.description, 'taobao') || ['已下单', '仓库处理中'].includes(event.providerStatusTag) || operational && !uncertainOperational)
     && status !== 'signed';
 }
 
@@ -202,7 +202,7 @@ export function anchorTaobaoEventTimes(events, order, now, fullTrack = [], { obs
 }
 
 export function taobaoTransitEvents(data, timestamp, rules, now) {
-  return normalizeLogisticsEvents(data.address.slice(0, 2001).map(step => ({ time: step?.time, description: step?.place })), timestamp, rules, now);
+  return normalizeLogisticsEvents(data.address.slice(0, 2001).map(step => ({ time: step?.time, description: step?.place, provider: 'taobao' })), timestamp, rules, now);
 }
 
 export function pddShippingEvents(shipping, timestamp, rules, now) {

@@ -32,7 +32,7 @@ function fixture(t) {
 test('identical collection repairs a legacy unknown dispatch once while snapshots remain read-only', t => {
   const { store, read, sync, legacy } = fixture(t);
   const old = legacy();
-  assert.equal(read().shippedAt, undefined);
+  assert.equal(read().shippedAt, DISPATCH.time, 'read projection repairs evidence without backfilling the saved row');
   assert.deepEqual(store.shipment(old.id), old, 'snapshot must not backfill legacy data');
   const project = t.mock.method(store.pickupCompletion, 'project');
   assert.equal(sync().evidenceChanged, true);

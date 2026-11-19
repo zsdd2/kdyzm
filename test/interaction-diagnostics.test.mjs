@@ -6,6 +6,29 @@ import { createService } from '../src/service.mjs';
 const KEY = 'ab'.repeat(32);
 const ADMIN = 'interaction-diagnostics-admin-token-0123456789';
 
+test('correlated diagnostics strictly validate metadata and deduplicate retained failure summaries', () => {
+  const ring = createInteractionDiagnostics();
+  const summary = { kind: 'sync_job', phase: 'sync', result: 'error', operationId: 'a'.repeat(32), appBuild: 30202,
+    dataVersion: 'b'.repeat(64), stage: 'core_execute', errorCode: 'stage_failed', durationMs: 120000, durationCapped: true,
+    failureSummary: true, failureCapacity: 16, failureRetained: 1, failureDropped: 0, trigger: 'passive' };
+  for (const invalid of [
+    { operationId: 'private-message' }, { operationId: 'a'.repeat(33) }, { appBuild: -1 }, { dataVersion: 'private-order' },
+    { stage: 'SQLite error with user data' }, { errorCode: 'private error' }, { durationCapped: 'true' },
+    { durationCapped: true, durationMs: 1 }, { failureSummary: 'true' }, { result: 'success' }, { errorCode: 'none' },
+    { failureCapacity: 0 }, { failureRetained: 129 }, { failureDropped: 10001 }, { message: 'private sms' }
+  ]) assert.throws(() => ring.recordClient('device-a', [{ ...summary, ...invalid }]), /无效|字段/);
+  assert.deepEqual(ring.recordClient('device-a', [summary, summary]), { accepted: 2 });
+  assert.equal(ring.read().events.length, 1);
+  assert.deepEqual(ring.recordClient('device-a', [summary]), { accepted: 1 });
+  ring.recordClient('device-b', [summary]);
+  assert.equal(ring.read().events.length, 2);
+  assert.deepEqual(Object.fromEntries(Object.keys(summary).map(key => [key, ring.read().events[0][key]])), summary);
+  assert.equal(JSON.stringify(ring.read()).includes('device-a'), false);
+  // v1 events remain valid and keep their original shape.
+  ring.recordClient('device-a', [{ kind: 'snapshot', phase: 'request', result: 'success', durationMs: 8 }]);
+  assert.equal('operationId' in ring.read().events.at(-1), false);
+});
+
 test('interaction ring validates events, bounds retention, and paginates by sequence', () => {
   let current = 1000;
   const ring = createInteractionDiagnostics({ now: () => current++, capacity: 2 });
@@ -88,6 +111,7 @@ test('device upload is isolated from read-only diagnostics and server completion
   const compact = await f.request('/v1/snapshot?view=compact', { token: f.device.token });
   assert.equal(compact.status, 200);
   assert.equal(compact.data.metadataOnly, false);
+  assert.ok(compact.data.capabilities.includes('interaction_diagnostics_v2'));
   assert.ok(compact.data.orders.length > 0);
   const metadata = await f.request(`/v1/snapshot?view=compact&dataVersion=${compact.data.dataVersion}`, { token: f.device.token });
   assert.equal(metadata.status, 200);

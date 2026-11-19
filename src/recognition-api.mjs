@@ -1,4 +1,4 @@
-import { fail, onlyKeys } from './security.mjs';
+import { fail, hash, onlyKeys } from './security.mjs';
 import { serverVersion } from './version.mjs';
 
 export function createRecognitionApi({ store, workflow, recognitionAi, stations, logisticsRules, logisticsDaily, now }) {
@@ -41,7 +41,10 @@ export function createRecognitionApi({ store, workflow, recognitionAi, stations,
       const scope = workflow.scope(row.id);
       if (scope.closed) continue;
       const { shipment, account } = scope;
-      samples.push({ shipmentId: shipment.id, platform: account.platform, status: shipment.status, station: shipment.station,
+      samples.push({ shipmentId: shipment.id, orderId: shipment.orderId,
+        evidenceKey: hash(JSON.stringify([shipment.status, shipment.station, shipment.pickupCode, shipment.arrivalAt, shipment.arrivalAtSource,
+          shipment.shippedAt, shipment.shippedAtSource, shipment.pickupCycle, shipment.pickupCompletion, shipment.logisticsState, shipment.logisticsEvents])),
+        platform: account.platform, status: shipment.status, station: shipment.station,
         logisticsState: shipment.logisticsState, arrivalAt: shipment.arrivalAt, arrivalAtSource: shipment.arrivalAtSource,
         arrivalAtPrecision: shipment.arrivalAtPrecision, blocked: !!scope.blocked,
         logisticsEvents: (shipment.logisticsEvents || []).slice(0, 12).map(({ time, timeText, description, provider }) =>

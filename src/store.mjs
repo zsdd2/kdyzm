@@ -10,10 +10,10 @@ import { effectivePicked, pickupCompletionState } from './pickup-completion.mjs'
 import { normalizeRetentionFields, orderRetention, retainedSignedShipment, validRetentionDate } from './order-retention.mjs';
 import { cookieIdentity } from './cookie-sync.mjs';
 import { COLLECTION_COOLDOWN, scheduledSyncAt } from './collection-schedule.mjs';
-import { jdShipmentStatus, retainMilestoneEvents, shippingEvidence } from './shipment-lifecycle.mjs';
+import { jdShipmentStatus, retainMilestoneEvents, shippingEvidence, shippingEvent } from './shipment-lifecycle.mjs';
 import { normalizeProductImageUrl } from './product-image.mjs';
 import { prepareUpgradeBackup } from './upgrade-backup.mjs';
-import { ShipmentViewCache } from './shipment-view.mjs';
+import { ShipmentViewCache, shipmentArrivalEvidence } from './shipment-view.mjs';
 import { normalizeTaobaoPickupCode } from './taobao-pickup-code.mjs';
 
 export const stableId = (...values) => hash(JSON.stringify(values)).slice(0, 32);
@@ -21,6 +21,15 @@ const parse = row => row && JSON.parse(row.data);
 const validTime = value => Number.isSafeInteger(value) && value > 0 && value <= 8640000000000000 ? value : 0;
 const shortText = (value, limit) => typeof value === 'string' ? value.slice(0, limit) : '';
 const waybillKey = value => String(value || '').normalize('NFKC').replace(/\s+/gu, '').toUpperCase();
+function collectionCoverage(value, checkedAt) {
+  const counts = ['pagesRead', 'pageLimit', 'seenOrders', 'activeOrders', 'trackedOutsideWindow'];
+  if (!value || value.version !== 1 || value.scope !== 'active_orders' || !['complete', 'partial'].includes(value.status)
+    || !['end', 'page_limit', 'repeated_page'].includes(value.reason)
+    || counts.some(key => !Number.isSafeInteger(value[key]) || value[key] < 0)) return undefined;
+  return { version: 1, scope: 'active_orders', status: value.status, reason: value.reason,
+    ...Object.fromEntries(counts.map(key => [key, value[key]])), checkedAt };
+}
+
 function logisticsData(input, old = {}, reuseEvents = false, rules, now) {
   const checkedAt = validTime(input.logisticsCheckedAt);
   if (checkedAt && checkedAt < (old.logisticsCheckedAt || 0)) return logisticsData({}, old, false, rules, now);
@@ -86,6 +95,13 @@ function pickupData(input = {}, old = {}, events = [], rules, now = Date.now(), 
     && !events.some(event => logisticsEventTimeIssue(event, now) === 'timeConflict')) {
     // A successful refreshed track supersedes previous template evidence. Structured locker evidence remains valid.
     result = evidence;
+  }
+  if (pickup.station && !genericPickupStation(pickup.station) && input.stationSource !== 'locker' && !input.station) {
+    result.station = pickup.station; result.stationSource = pickup.stationSource;
+  }
+  const candidate = shipmentArrivalEvidence({ ...result, logisticsEvents: events }, { platform, rules, now }).candidates[0];
+  if (candidate && !candidate.usableForCurrent && !['locker_arrival', 'locker_created'].includes(result.arrivalAtSource)) {
+    result.arrivalAt = 0; result.arrivalAtSource = 'unknown'; result.arrivalAtPrecision = 'unknown';
   }
   // Legacy cache timestamps and station names carry no provenance on their own.
   return result;
@@ -371,6 +387,8 @@ export class Store {
         const trustedArrival = validTime(old.arrivalAt) && ['platform_event', 'locker_arrival'].includes(old.arrivalAtSource);
         const knownStation = logistics.catalogStation(old.station, catalog).id;
         if (knownStation && trustedArrival) continue;
+        const candidate = shipmentArrivalEvidence(old, { platform: account.platform, catalog, rules, now: this.now() }).candidates[0];
+        if (candidate && !candidate.usableForCurrent) continue;
         let evidence = logistics.catalogPickupEvidence(old.logisticsEvents, catalog, rules);
         if (!evidence.arrivalAt && !trustedArrival) evidence = pickupEvidence(old.logisticsEvents, rules, true);
         if (!evidence.arrivalAt || evidence.arrivalAt > this.now() || !evidence.station && !old.station) continue;
@@ -421,7 +439,9 @@ export class Store {
     const repairedTime = dated.some(event => event.time && events.some(previous => !previous.time
       && previous.timeText === event.timeText && previous.description === event.description));
     const pickup = repairedTime ? pickupData({}, shipment, normalized, rules, now, 'taobao') : {};
-    return normalizeTaobaoPickupCode({ ...shipment, ...pickup, logisticsEvents: normalized });
+    const shipping = shipment.shippedAt === 0 && normalized.some(event => shippingEvent(event.description, 'taobao'))
+      ? shippingEvidence(normalized, shipment, now, shipment.pickupCycle, 'taobao') : {};
+    return normalizeTaobaoPickupCode({ ...shipment, ...pickup, ...shipping, logisticsEvents: normalized });
   }
   shipmentView(shipment, order = this.order(shipment.orderId)) {
     shipment = this.normalizedShipment(shipment, order);
@@ -439,7 +459,8 @@ export class Store {
       && shipment.stationSource !== 'locker' && !(shipment.logisticsEvents || []).some(event => logisticsEventTimeIssue(event, now) === 'timeConflict')) {
       const catalogEvidence = globalThis.PickCodeLogistics.catalogPickupEvidence(shipment.logisticsEvents || [], catalog, rules);
       const trusted = pickup.arrivalAt && ['platform_event', 'locker_arrival'].includes(pickup.arrivalAtSource);
-      if (catalogEvidence.arrivalAt && catalogEvidence.arrivalAt <= now && (!trusted || !globalThis.PickCodeLogistics.catalogStation(pickup.station, catalog).id)) {
+      const candidate = catalogEvidence.arrivalAt ? shipmentArrivalEvidence({ ...shipment, ...pickup }, { platform, catalog, rules, now }).candidates[0] : undefined;
+      if (candidate?.usableForCurrent !== false && catalogEvidence.arrivalAt && catalogEvidence.arrivalAt <= now && (!trusted || !globalThis.PickCodeLogistics.catalogStation(pickup.station, catalog).id)) {
         pickup = { ...pickup, ...catalogEvidence, ...(trusted ? { arrivalAt: pickup.arrivalAt, arrivalAtSource: pickup.arrivalAtSource, arrivalAtPrecision: pickup.arrivalAtPrecision } : {}) };
         status = 'arrived';
       }
@@ -607,10 +628,10 @@ export class Store {
   importResult(accountId, result, { partial = false, reconcile = true } = {}) {
     const rules = result.logisticsRules ?? this.getLogisticsRules?.();
     const completionRules = this.pickupCompletion.rules(), completionConfig = this.pickupCompletion.config();
-    const parserKey = hash(JSON.stringify(['shipment-lifecycle-v6', rules, completionRules, completionConfig]));
     const changedShipmentIds = [];
     const account = this.account(accountId);
     if (!account) fail(404, 'NOT_FOUND', '账号不存在');
+    const parserKey = hash(JSON.stringify([account.platform === 'taobao' ? 'shipment-lifecycle-v7-taobao-arrival-v2' : 'shipment-lifecycle-v6-arrival-v2', rules, completionRules, completionConfig]));
     this.transaction(() => {
       const orderIds = new Map();
       const identityWarnings = [];
@@ -761,7 +782,8 @@ export class Store {
         }
       }
       // Absence, pagination, refunds and source signatures never change manual state or tombstones.
-      this.updateAccount(accountId, { status: partial ? 'syncing' : 'ok', ...(!partial ? { lastSuccessAt: this.now() } : {}), error: '',
+      const coverage = !partial && collectionCoverage(result.collectionCoverage, this.now());
+      this.updateAccount(accountId, { ...(coverage ? { collectionCoverage: coverage } : {}), status: partial ? 'syncing' : 'ok', ...(!partial ? { lastSuccessAt: this.now() } : {}), error: '',
         warnings: [...new Set([...(partial ? account.warnings || [] : []), ...(result.warnings || []), ...identityWarnings])] });
     });
     return { evidenceChanged: changedShipmentIds.length > 0, changedShipmentIds };
@@ -808,7 +830,7 @@ export class Store {
         shipping = shippingEvidence(s.logisticsEvents || [], s, this.now(), s.pickupCycle, 'jd');
         if (!['arrived', 'signed'].includes(s.status)) publicShipment.status = jdShipmentStatus(s.logisticsEvents || [], s.status, this.getLogisticsRules?.(), this.now());
       } else if (!['shippedAt', 'shippedAtSource', 'shippedAtPrecision'].every(field => Object.hasOwn(s, field))) {
-        shipping = shippingEvidence(s.logisticsEvents || [], s, this.now());
+        shipping = shippingEvidence(s.logisticsEvents || [], s, this.now(), s.pickupCycle, platform);
       } else if (validTime(shippedAt) && shippedAt <= this.now() && shippedAtSource === 'platform_event'
         && (!s.pickupCycle?.evidenceKey || s.pickupCycle.evidenceKey === 'initial' || shippedAt > validTime(s.pickupCycle.startedAt))) {
         shipping = { shippedAt, shippedAtSource, shippedAtPrecision: ['second', 'minute'].includes(shippedAtPrecision) ? shippedAtPrecision : 'unknown' };

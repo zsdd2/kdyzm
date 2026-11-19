@@ -1,0 +1,586 @@
+{
+  "version": 1,
+  "evaluation": "offline-synthetic-contract",
+  "productionAccuracy": null,
+  "samples": 57,
+  "verified": 51,
+  "unverified": 6,
+  "passed": 57,
+  "verifiedPassed": 51,
+  "unverifiedRatio": 0.10526315789473684,
+  "accuracy": 1,
+  "groups": [
+    {
+      "platform": "taobao",
+      "contentKind": "logistics",
+      "target": "arrival_time",
+      "methodId": "taobao.arrival_evidence",
+      "methodVersion": 2,
+      "samples": 13,
+      "verified": 12,
+      "unverified": 1,
+      "passed": 13,
+      "verifiedPassed": 12,
+      "categories": {
+        "positive": 2,
+        "negative": 8,
+        "boundary": 3
+      },
+      "unverifiedRatio": 0.07692307692307693,
+      "accuracy": 1
+    },
+    {
+      "platform": "pdd",
+      "contentKind": "logistics",
+      "target": "arrival_time",
+      "methodId": "pdd.arrival_evidence",
+      "methodVersion": 2,
+      "samples": 13,
+      "verified": 12,
+      "unverified": 1,
+      "passed": 13,
+      "verifiedPassed": 12,
+      "categories": {
+        "positive": 2,
+        "negative": 8,
+        "boundary": 3
+      },
+      "unverifiedRatio": 0.07692307692307693,
+      "accuracy": 1
+    },
+    {
+      "platform": "jd",
+      "contentKind": "logistics",
+      "target": "arrival_time",
+      "methodId": "jd.arrival_evidence",
+      "methodVersion": 2,
+      "samples": 13,
+      "verified": 12,
+      "unverified": 1,
+      "passed": 13,
+      "verifiedPassed": 12,
+      "categories": {
+        "positive": 2,
+        "negative": 8,
+        "boundary": 3
+      },
+      "unverifiedRatio": 0.07692307692307693,
+      "accuracy": 1
+    },
+    {
+      "platform": "taobao",
+      "contentKind": "logistics",
+      "target": "event_time",
+      "methodId": "taobao.event_timestamp",
+      "methodVersion": 1,
+      "samples": 3,
+      "verified": 3,
+      "unverified": 0,
+      "passed": 3,
+      "verifiedPassed": 3,
+      "categories": {
+        "positive": 1,
+        "negative": 1,
+        "boundary": 1
+      },
+      "unverifiedRatio": 0,
+      "accuracy": 1
+    },
+    {
+      "platform": "taobao",
+      "contentKind": "pickup_match",
+      "target": "station_match",
+      "methodId": "taobao.station_identity",
+      "methodVersion": 1,
+      "samples": 3,
+      "verified": 2,
+      "unverified": 1,
+      "passed": 3,
+      "verifiedPassed": 2,
+      "categories": {
+        "positive": 1,
+        "negative": 1,
+        "boundary": 1
+      },
+      "unverifiedRatio": 0.3333333333333333,
+      "accuracy": 1
+    },
+    {
+      "platform": "pdd",
+      "contentKind": "logistics",
+      "target": "event_time",
+      "methodId": "pdd.event_timestamp",
+      "methodVersion": 1,
+      "samples": 3,
+      "verified": 3,
+      "unverified": 0,
+      "passed": 3,
+      "verifiedPassed": 3,
+      "categories": {
+        "positive": 1,
+        "negative": 1,
+        "boundary": 1
+      },
+      "unverifiedRatio": 0,
+      "accuracy": 1
+    },
+    {
+      "platform": "pdd",
+      "contentKind": "pickup_match",
+      "target": "station_match",
+      "methodId": "pdd.station_identity",
+      "methodVersion": 1,
+      "samples": 3,
+      "verified": 2,
+      "unverified": 1,
+      "passed": 3,
+      "verifiedPassed": 2,
+      "categories": {
+        "positive": 1,
+        "negative": 1,
+        "boundary": 1
+      },
+      "unverifiedRatio": 0.3333333333333333,
+      "accuracy": 1
+    },
+    {
+      "platform": "jd",
+      "contentKind": "logistics",
+      "target": "event_time",
+      "methodId": "jd.event_timestamp",
+      "methodVersion": 1,
+      "samples": 3,
+      "verified": 3,
+      "unverified": 0,
+      "passed": 3,
+      "verifiedPassed": 3,
+      "categories": {
+        "positive": 1,
+        "negative": 1,
+        "boundary": 1
+      },
+      "unverifiedRatio": 0,
+      "accuracy": 1
+    },
+    {
+      "platform": "jd",
+      "contentKind": "pickup_match",
+      "target": "station_match",
+      "methodId": "jd.station_identity",
+      "methodVersion": 1,
+      "samples": 3,
+      "verified": 2,
+      "unverified": 1,
+      "passed": 3,
+      "verifiedPassed": 2,
+      "categories": {
+        "positive": 1,
+        "negative": 1,
+        "boundary": 1
+      },
+      "unverifiedRatio": 0.3333333333333333,
+      "accuracy": 1
+    }
+  ],
+  "results": [
+    {
+      "id": "taobao-same-station",
+      "group": "taobao|logistics|arrival_time|taobao.arrival_evidence|2",
+      "category": "positive",
+      "truth": "verified_synthetic",
+      "passed": true
+    },
+    {
+      "id": "taobao-confirmed-alias",
+      "group": "taobao|logistics|arrival_time|taobao.arrival_evidence|2",
+      "category": "positive",
+      "truth": "verified_synthetic",
+      "passed": true
+    },
+    {
+      "id": "taobao-unconfirmed-wrapper",
+      "group": "taobao|logistics|arrival_time|taobao.arrival_evidence|2",
+      "category": "boundary",
+      "truth": "unverified",
+      "passed": true
+    },
+    {
+      "id": "taobao-cycle-0",
+      "group": "taobao|logistics|arrival_time|taobao.arrival_evidence|2",
+      "category": "negative",
+      "truth": "verified_synthetic",
+      "passed": true
+    },
+    {
+      "id": "taobao-cycle-1",
+      "group": "taobao|logistics|arrival_time|taobao.arrival_evidence|2",
+      "category": "negative",
+      "truth": "verified_synthetic",
+      "passed": true
+    },
+    {
+      "id": "taobao-cycle-2",
+      "group": "taobao|logistics|arrival_time|taobao.arrival_evidence|2",
+      "category": "negative",
+      "truth": "verified_synthetic",
+      "passed": true
+    },
+    {
+      "id": "taobao-undated-reset",
+      "group": "taobao|logistics|arrival_time|taobao.arrival_evidence|2",
+      "category": "boundary",
+      "truth": "verified_synthetic",
+      "passed": true
+    },
+    {
+      "id": "taobao-different-location-0",
+      "group": "taobao|logistics|arrival_time|taobao.arrival_evidence|2",
+      "category": "negative",
+      "truth": "verified_synthetic",
+      "passed": true
+    },
+    {
+      "id": "taobao-different-location-1",
+      "group": "taobao|logistics|arrival_time|taobao.arrival_evidence|2",
+      "category": "negative",
+      "truth": "verified_synthetic",
+      "passed": true
+    },
+    {
+      "id": "taobao-different-location-2",
+      "group": "taobao|logistics|arrival_time|taobao.arrival_evidence|2",
+      "category": "negative",
+      "truth": "verified_synthetic",
+      "passed": true
+    },
+    {
+      "id": "taobao-different-location-3",
+      "group": "taobao|logistics|arrival_time|taobao.arrival_evidence|2",
+      "category": "negative",
+      "truth": "verified_synthetic",
+      "passed": true
+    },
+    {
+      "id": "taobao-unknown-event-time",
+      "group": "taobao|logistics|arrival_time|taobao.arrival_evidence|2",
+      "category": "boundary",
+      "truth": "verified_synthetic",
+      "passed": true
+    },
+    {
+      "id": "taobao-future-event-time",
+      "group": "taobao|logistics|arrival_time|taobao.arrival_evidence|2",
+      "category": "negative",
+      "truth": "verified_synthetic",
+      "passed": true
+    },
+    {
+      "id": "pdd-same-station",
+      "group": "pdd|logistics|arrival_time|pdd.arrival_evidence|2",
+      "category": "positive",
+      "truth": "verified_synthetic",
+      "passed": true
+    },
+    {
+      "id": "pdd-confirmed-alias",
+      "group": "pdd|logistics|arrival_time|pdd.arrival_evidence|2",
+      "category": "positive",
+      "truth": "verified_synthetic",
+      "passed": true
+    },
+    {
+      "id": "pdd-unconfirmed-wrapper",
+      "group": "pdd|logistics|arrival_time|pdd.arrival_evidence|2",
+      "category": "boundary",
+      "truth": "unverified",
+      "passed": true
+    },
+    {
+      "id": "pdd-cycle-0",
+      "group": "pdd|logistics|arrival_time|pdd.arrival_evidence|2",
+      "category": "negative",
+      "truth": "verified_synthetic",
+      "passed": true
+    },
+    {
+      "id": "pdd-cycle-1",
+      "group": "pdd|logistics|arrival_time|pdd.arrival_evidence|2",
+      "category": "negative",
+      "truth": "verified_synthetic",
+      "passed": true
+    },
+    {
+      "id": "pdd-cycle-2",
+      "group": "pdd|logistics|arrival_time|pdd.arrival_evidence|2",
+      "category": "negative",
+      "truth": "verified_synthetic",
+      "passed": true
+    },
+    {
+      "id": "pdd-undated-reset",
+      "group": "pdd|logistics|arrival_time|pdd.arrival_evidence|2",
+      "category": "boundary",
+      "truth": "verified_synthetic",
+      "passed": true
+    },
+    {
+      "id": "pdd-different-location-0",
+      "group": "pdd|logistics|arrival_time|pdd.arrival_evidence|2",
+      "category": "negative",
+      "truth": "verified_synthetic",
+      "passed": true
+    },
+    {
+      "id": "pdd-different-location-1",
+      "group": "pdd|logistics|arrival_time|pdd.arrival_evidence|2",
+      "category": "negative",
+      "truth": "verified_synthetic",
+      "passed": true
+    },
+    {
+      "id": "pdd-different-location-2",
+      "group": "pdd|logistics|arrival_time|pdd.arrival_evidence|2",
+      "category": "negative",
+      "truth": "verified_synthetic",
+      "passed": true
+    },
+    {
+      "id": "pdd-different-location-3",
+      "group": "pdd|logistics|arrival_time|pdd.arrival_evidence|2",
+      "category": "negative",
+      "truth": "verified_synthetic",
+      "passed": true
+    },
+    {
+      "id": "pdd-unknown-event-time",
+      "group": "pdd|logistics|arrival_time|pdd.arrival_evidence|2",
+      "category": "boundary",
+      "truth": "verified_synthetic",
+      "passed": true
+    },
+    {
+      "id": "pdd-future-event-time",
+      "group": "pdd|logistics|arrival_time|pdd.arrival_evidence|2",
+      "category": "negative",
+      "truth": "verified_synthetic",
+      "passed": true
+    },
+    {
+      "id": "jd-same-station",
+      "group": "jd|logistics|arrival_time|jd.arrival_evidence|2",
+      "category": "positive",
+      "truth": "verified_synthetic",
+      "passed": true
+    },
+    {
+      "id": "jd-confirmed-alias",
+      "group": "jd|logistics|arrival_time|jd.arrival_evidence|2",
+      "category": "positive",
+      "truth": "verified_synthetic",
+      "passed": true
+    },
+    {
+      "id": "jd-unconfirmed-wrapper",
+      "group": "jd|logistics|arrival_time|jd.arrival_evidence|2",
+      "category": "boundary",
+      "truth": "unverified",
+      "passed": true
+    },
+    {
+      "id": "jd-cycle-0",
+      "group": "jd|logistics|arrival_time|jd.arrival_evidence|2",
+      "category": "negative",
+      "truth": "verified_synthetic",
+      "passed": true
+    },
+    {
+      "id": "jd-cycle-1",
+      "group": "jd|logistics|arrival_time|jd.arrival_evidence|2",
+      "category": "negative",
+      "truth": "verified_synthetic",
+      "passed": true
+    },
+    {
+      "id": "jd-cycle-2",
+      "group": "jd|logistics|arrival_time|jd.arrival_evidence|2",
+      "category": "negative",
+      "truth": "verified_synthetic",
+      "passed": true
+    },
+    {
+      "id": "jd-undated-reset",
+      "group": "jd|logistics|arrival_time|jd.arrival_evidence|2",
+      "category": "boundary",
+      "truth": "verified_synthetic",
+      "passed": true
+    },
+    {
+      "id": "jd-different-location-0",
+      "group": "jd|logistics|arrival_time|jd.arrival_evidence|2",
+      "category": "negative",
+      "truth": "verified_synthetic",
+      "passed": true
+    },
+    {
+      "id": "jd-different-location-1",
+      "group": "jd|logistics|arrival_time|jd.arrival_evidence|2",
+      "category": "negative",
+      "truth": "verified_synthetic",
+      "passed": true
+    },
+    {
+      "id": "jd-different-location-2",
+      "group": "jd|logistics|arrival_time|jd.arrival_evidence|2",
+      "category": "negative",
+      "truth": "verified_synthetic",
+      "passed": true
+    },
+    {
+      "id": "jd-different-location-3",
+      "group": "jd|logistics|arrival_time|jd.arrival_evidence|2",
+      "category": "negative",
+      "truth": "verified_synthetic",
+      "passed": true
+    },
+    {
+      "id": "jd-unknown-event-time",
+      "group": "jd|logistics|arrival_time|jd.arrival_evidence|2",
+      "category": "boundary",
+      "truth": "verified_synthetic",
+      "passed": true
+    },
+    {
+      "id": "jd-future-event-time",
+      "group": "jd|logistics|arrival_time|jd.arrival_evidence|2",
+      "category": "negative",
+      "truth": "verified_synthetic",
+      "passed": true
+    },
+    {
+      "id": "taobao-event_time-manual-review",
+      "group": "taobao|logistics|event_time|taobao.event_timestamp|1",
+      "category": "positive",
+      "truth": "verified_synthetic",
+      "passed": true
+    },
+    {
+      "id": "taobao-event_time-invented-evidence",
+      "group": "taobao|logistics|event_time|taobao.event_timestamp|1",
+      "category": "negative",
+      "truth": "verified_synthetic",
+      "passed": true
+    },
+    {
+      "id": "taobao-event_time-invented-time",
+      "group": "taobao|logistics|event_time|taobao.event_timestamp|1",
+      "category": "boundary",
+      "truth": "verified_synthetic",
+      "passed": true
+    },
+    {
+      "id": "taobao-station_match-manual-review",
+      "group": "taobao|pickup_match|station_match|taobao.station_identity|1",
+      "category": "positive",
+      "truth": "verified_synthetic",
+      "passed": true
+    },
+    {
+      "id": "taobao-station_match-invented-evidence",
+      "group": "taobao|pickup_match|station_match|taobao.station_identity|1",
+      "category": "negative",
+      "truth": "verified_synthetic",
+      "passed": true
+    },
+    {
+      "id": "taobao-station_match-unknown-identity",
+      "group": "taobao|pickup_match|station_match|taobao.station_identity|1",
+      "category": "boundary",
+      "truth": "unverified",
+      "passed": true
+    },
+    {
+      "id": "pdd-event_time-manual-review",
+      "group": "pdd|logistics|event_time|pdd.event_timestamp|1",
+      "category": "positive",
+      "truth": "verified_synthetic",
+      "passed": true
+    },
+    {
+      "id": "pdd-event_time-invented-evidence",
+      "group": "pdd|logistics|event_time|pdd.event_timestamp|1",
+      "category": "negative",
+      "truth": "verified_synthetic",
+      "passed": true
+    },
+    {
+      "id": "pdd-event_time-invented-time",
+      "group": "pdd|logistics|event_time|pdd.event_timestamp|1",
+      "category": "boundary",
+      "truth": "verified_synthetic",
+      "passed": true
+    },
+    {
+      "id": "pdd-station_match-manual-review",
+      "group": "pdd|pickup_match|station_match|pdd.station_identity|1",
+      "category": "positive",
+      "truth": "verified_synthetic",
+      "passed": true
+    },
+    {
+      "id": "pdd-station_match-invented-evidence",
+      "group": "pdd|pickup_match|station_match|pdd.station_identity|1",
+      "category": "negative",
+      "truth": "verified_synthetic",
+      "passed": true
+    },
+    {
+      "id": "pdd-station_match-unknown-identity",
+      "group": "pdd|pickup_match|station_match|pdd.station_identity|1",
+      "category": "boundary",
+      "truth": "unverified",
+      "passed": true
+    },
+    {
+      "id": "jd-event_time-manual-review",
+      "group": "jd|logistics|event_time|jd.event_timestamp|1",
+      "category": "positive",
+      "truth": "verified_synthetic",
+      "passed": true
+    },
+    {
+      "id": "jd-event_time-invented-evidence",
+      "group": "jd|logistics|event_time|jd.event_timestamp|1",
+      "category": "negative",
+      "truth": "verified_synthetic",
+      "passed": true
+    },
+    {
+      "id": "jd-event_time-invented-time",
+      "group": "jd|logistics|event_time|jd.event_timestamp|1",
+      "category": "boundary",
+      "truth": "verified_synthetic",
+      "passed": true
+    },
+    {
+      "id": "jd-station_match-manual-review",
+      "group": "jd|pickup_match|station_match|jd.station_identity|1",
+      "category": "positive",
+      "truth": "verified_synthetic",
+      "passed": true
+    },
+    {
+      "id": "jd-station_match-invented-evidence",
+      "group": "jd|pickup_match|station_match|jd.station_identity|1",
+      "category": "negative",
+      "truth": "verified_synthetic",
+      "passed": true
+    },
+    {
+      "id": "jd-station_match-unknown-identity",
+      "group": "jd|pickup_match|station_match|jd.station_identity|1",
+      "category": "boundary",
+      "truth": "unverified",
+      "passed": true
+    }
+  ]
+}

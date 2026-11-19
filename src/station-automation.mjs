@@ -3,12 +3,12 @@ import { stationSubLocation } from '../public/station-location.js';
 
 const placeParts = value => {
   const parts = new Map();
-  for (const match of stationKey(value).matchAll(/(\d+)(卡|号(?:快递柜|自提柜|柜|楼|门)|栋|幢)/gu)) {
-    const kind = match[2].replace(/号(?:快递柜|自提柜)/u, '号柜');
+  for (const match of stationKey(value).matchAll(/((?:[A-Za-z]+区|\d+区)?[A-Za-z0-9]+)(号?(?:快递柜|自提柜|柜)|卡|号楼|栋|幢|号门)/gu)) {
+    const kind = /柜/u.test(match[2]) ? '号柜' : /楼|栋|幢/u.test(match[2]) ? '栋' : match[2];
     if (!parts.has(kind)) parts.set(kind, new Set());
-    parts.get(kind).add(match[1]);
+    parts.get(kind).add(match[1].toUpperCase());
   }
-  for (const match of stationKey(value).matchAll(/([东南西北正侧后]{1,2})门/gu)) {
+  for (const match of stationKey(value).matchAll(/([东南西北正侧后]{1,2})(?:大)?门/gu)) {
     if (!parts.has('方位门')) parts.set('方位门', new Set());
     parts.get('方位门').add(match[1]);
   }

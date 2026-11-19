@@ -8,6 +8,9 @@ const precision = value => ['second', 'minute'].includes(value) ? value : 'unkno
 export function shippingEvent(description, platform) {
   const text = typeof description === 'string' ? description.normalize('NFKC').replace(/\s+/gu, '') : '';
   const dispatched = platform !== 'jd' && /已(?:经)?(?:成功)?发货|发货(?:完成|成功)/.test(text);
+  const collected = platform === 'taobao'
+    && /(?:快递|速运|速递|物流|邮政|快递员)已(?:经)?(?:成功)?收取(?:您的)?(?:快件|包裹)(?:[，,。；;！!]|$)/.test(text)
+    && !/预计|预估|预定|计划|将于|即将|尚未|未|没有|准备|等待|预约|申请|请|要求|希望|安排|失败|异常|有误|收件人|收货人|用户|客户|本人|代收|改派|改投|转寄/.test(text);
   // Status, waybill assignment, warehouse printing and intermediate departures are not dispatch evidence.
   if (!text || /[?？]|是否|疑似|可能|取消|撤销|虚假|误报|退回|退货|退件|寄回|逆向/.test(text)
     || /(?:预计|预定|计划|将于|即将|尚未|未|没有|准备|预约|申请|请|要求|希望|安排)[^，,。；;]{0,12}(?:发货|揽收)/.test(text)
@@ -15,7 +18,7 @@ export function shippingEvent(description, platform) {
     // A completed merchant dispatch can precede carrier collection.
     || !dispatched && /(?:等待|待)[^，,。；;]{0,12}揽收/.test(text)
     || /(?:发货|揽收)[^，,。；;]{0,8}(?:失败|未成功|异常|有误)/.test(text)) return false;
-  return dispatched || /已(?:经)?(?:成功)?揽收|揽收(?:完成|成功)|已(?:由|被)[^，,。；;]{1,50}揽收/.test(text);
+  return dispatched || collected || /已(?:经)?(?:成功)?揽收|揽收(?:完成|成功)|已(?:由|被)[^，,。；;]{1,50}揽收/.test(text);
 }
 
 export function shippingEvidence(events = [], old = {}, now = Date.now(), cycle = old.pickupCycle, platform) {
@@ -75,7 +78,7 @@ export function retainMilestoneEvents(events, rules, now = Date.now(), limit = 1
   pin(reset);
   pin(events.find(event => validTime(event.time) && event.time > now && logistics.pickupCycleReset(event.description || '')));
   pin(events.find(event => !validTime(event.time) && logistics.pickupCycleReset(event.description || '')));
-  const shipped = events.filter(event => validTime(event.time) && shippingEvent(event.description));
+  const shipped = events.filter(event => validTime(event.time) && shippingEvent(event.description, event.provider));
   pin(shipped.filter(event => !reset || event.time > reset.time).at(-1));
   pin(shipped.filter(event => (!reset || event.time > reset.time) && shippingEvent(event.description, 'jd')).at(-1));
   pin(events.find(event => validTime(event.time) && event.time <= now && (!reset || event.time > reset.time)

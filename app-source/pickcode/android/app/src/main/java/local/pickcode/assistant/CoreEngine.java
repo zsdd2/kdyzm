@@ -9,11 +9,24 @@ import org.mozilla.javascript.ScriptableObject;
 /** Executes only the bundled ES5 engine. User rules are JSON, never JavaScript. */
 public final class CoreEngine {
     private final String source;
+    public interface PhaseObserver { void record(String phase, long durationMs, boolean success); }
+
+    static void phase(PhaseObserver observer, String phase, long startedAt, boolean success) {
+        if (observer == null) return;
+        try { observer.record(phase, Math.max(0, (System.nanoTime() - startedAt) / 1_000_000), success); }
+        catch (RuntimeException ignored) { /* Diagnostics cannot prevent a local commit. */ }
+    }
 
     public CoreEngine(String source) { this.source = source; }
 
     public String dispatch(String state, String request) {
         return invoke("dispatch", state, request);
+    }
+
+    public String dispatch(String state, String request, String committedProjection, PhaseObserver observer) {
+        return run((cx, scope, core) -> Context.toString(((Function)
+                ScriptableObject.getProperty(core, "dispatch")).call(cx, scope, core,
+                new Object[]{state, request, committedProjection})), observer);
     }
 
     public String validateCandidate(String candidate, String sample, String expected) {
@@ -47,6 +60,10 @@ public final class CoreEngine {
     private interface Operation { String apply(Context cx, Scriptable scope, Scriptable core); }
 
     private String run(Operation operation) {
+        return run(operation, null);
+    }
+
+    private String run(Operation operation, PhaseObserver observer) {
         final long deadline = System.nanoTime() + 20_000_000_000L;
         ContextFactory factory = new ContextFactory() {
             @Override protected Context makeContext() {
@@ -63,10 +80,21 @@ public final class CoreEngine {
             }
         };
         return factory.call(cx -> {
-            Scriptable scope = cx.initSafeStandardObjects();
-            cx.evaluateString(scope, source, "pickcode-core.js", 1, null);
-            Scriptable core = (Scriptable) ScriptableObject.getProperty(scope, "PickCodeCore");
-            return operation.apply(cx, scope, core);
+            long startedAt = System.nanoTime();
+            boolean success = false;
+            Scriptable scope, core;
+            try {
+                scope = cx.initSafeStandardObjects();
+                cx.evaluateString(scope, source, "pickcode-core.js", 1, null);
+                core = (Scriptable) ScriptableObject.getProperty(scope, "PickCodeCore");
+                success = true;
+            } finally { phase(observer, "core_init", startedAt, success); }
+            startedAt = System.nanoTime(); success = false;
+            try {
+                String result = operation.apply(cx, scope, core);
+                success = true;
+                return result;
+            } finally { phase(observer, "core_execute", startedAt, success); }
         });
     }
 }

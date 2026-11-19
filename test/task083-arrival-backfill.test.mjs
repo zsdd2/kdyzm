@@ -60,7 +60,8 @@ function fixture(t, changes = {}) {
 
 test('已归属目录站点仍回填缺失时间，保留原站名并幂等', t => {
   const { store, read } = fixture(t, { station: '人工确认站名', stationSource: 'unknown' });
-  const known = [...catalog, { id: 'manual', name: '人工确认站名', enabled: true }];
+  const known = [{ ...catalog[0], aliases: [{ name: '人工确认站名' }] }];
+  store.getStationRules = () => ({ stations: known });
   assert.deepEqual(store.refreshStationRecognition(known), { changed: 1 });
   assert.equal(read().arrivalAt, AT);
   assert.equal(read().station, '人工确认站名');
@@ -113,4 +114,14 @@ test('完成后仍保留历史到站里程碑，仅主动回填路径拒绝重�
   const events = [event('本人已签收', AT + 1000), event()];
   assert.equal(engine.pickupEvidence(events).arrivalAt, AT);
   assert.equal(engine.pickupEvidence(events, undefined, true).arrivalAt, 0);
+});
+
+test('独立目录站点不能借用其他站点的到站时间', t => {
+  const { store, read } = fixture(t, { station: '人工确认站名', stationSource: 'unknown' });
+  const known = [...catalog, { id: 'manual', name: '人工确认站名', enabled: true }];
+  store.getStationRules = () => ({ stations: known });
+  assert.deepEqual(store.refreshStationRecognition(known), { changed: 0 });
+  assert.equal(read().arrivalAt, 0);
+  assert.equal(read().station, '人工确认站名');
+  assert.equal(read().platformView.quality.arrivalTime.reasonCode, 'STATION_CONFLICT');
 });

@@ -7,7 +7,7 @@ const eventFields = ['time', 'timeText', 'timePrecision', 'description', 'locati
 const taskFields = ['id', 'accountId', 'accountIds', 'orderId', 'shipmentId', 'candidateShipmentIds', 'target', 'method', 'status', 'reasonCode', 'retryCount', 'aiAttempts', 'nextRetryAt', 'createdAt', 'updatedAt'];
 
 export function createDiagnosticApi({ store, workflow, interactions }) {
-  const accounts = () => store.accounts().map(account => pick(account, ['id', 'platform', 'label', 'enabled', 'status', 'lastSuccessAt', 'lastFullSuccessAt', 'lastAttemptAt', 'nextSyncAt', 'error', 'warnings']));
+  const accounts = () => store.accounts().map(account => pick(account, ['id', 'platform', 'label', 'enabled', 'status', 'lastSuccessAt', 'lastFullSuccessAt', 'lastAttemptAt', 'nextSyncAt', 'error', 'warnings', 'collectionCoverage']));
   function orders(params) {
     const allowed = ['limit', 'after', 'query', 'platform', 'accountId'];
     if ([...params.keys()].some(key => !allowed.includes(key) || params.getAll(key).length !== 1)) fail(400, 'INVALID_DIAGNOSTIC_QUERY', '查询参数无效');
@@ -35,6 +35,7 @@ export function createDiagnosticApi({ store, workflow, interactions }) {
     const shipments = store.db.prepare("SELECT data FROM shipments WHERE account_id=? AND json_extract(data,'$.orderId')=? ORDER BY id").all(value.accountId, id)
       .map(row => JSON.parse(row.data)).filter(shipment => store.shipmentAlias(shipment.id).id === shipment.id)
       .map(shipment => ({ ...pick(shipment, shipmentFields),
+        platformView: store.shipmentView(shipment, value),
         pickupCycle: shipment.pickupCycle ? pick(shipment.pickupCycle, ['id', 'startedAt', 'evidenceKey', 'status']) : null,
         pickupCompletion: shipment.pickupCompletion ? { ...pick(shipment.pickupCompletion, ['version', 'autoPicked', 'manualOverride', 'completedAt']),
           evidence: shipment.pickupCompletion.evidence ? pick(shipment.pickupCompletion.evidence, ['kind', 'eventTime', 'timePrecision', 'description', 'provider', 'ruleId', 'ruleVersion']) : null } : null,

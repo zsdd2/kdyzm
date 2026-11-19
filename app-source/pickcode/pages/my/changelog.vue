@@ -2,6 +2,14 @@
   <view class="changelog-container sf-page">
     <view class="version-list" :class="{ expanded: showOlder }">
       <view class="version-item sf-surface">
+        <view class="version-header"><text class="version-name">v3.2.2 · 私人版</text><text class="version-date">2026-11-20</text></view>
+        <view class="update-list">
+          <view class="update-item"><text class="tag optimize">同步</text><text class="content">同步时间和任务进度更新复用已有订单，减少重复计算，保留离线确认</text></view>
+          <view class="update-item"><text class="tag fix">物流</text><text class="content">修复淘宝明确收取快件的发货时间；站点冲突时保留到站记录供核对</text></view>
+          <view class="update-item"><text class="tag feature">诊断</text><text class="content">区分网络、计算和保存失败，失败摘要可在重启后补报，便于定位卡顿</text></view>
+        </view>
+      </view>
+      <view class="version-item sf-surface">
         <view class="version-header"><text class="version-name">v3.2.1 · 私人版</text><text class="version-date">2026-11-13</text></view>
         <view class="update-list">
           <view class="update-item"><text class="tag fix">淘宝</text><text class="content">分包轨迹独立排序，缺少年份默认沿用订单年份，年底跨年单独处理，柜号和取件码分开识别</text></view>

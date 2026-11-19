@@ -18,6 +18,24 @@ function taobaoFetch(orders, fieldsById = {}, calls = []) {
   };
 }
 
+test('Taobao coverage separates a complete active-order window from bounded or repeated pages', async () => {
+  const waiting = [{ id: 'coverage-order', createTime: Date.now(), extra: { tradeStatus: 'WAIT_SELLER_SEND_GOODS' },
+    subOrders: [{ itemInfo: { title: 'Synthetic pending item' } }] }];
+  const complete = await createCollector({ maxPages: 3, fetchImpl: taobaoFetch(waiting) })({ platform: 'taobao' }, '_m_h5_tk=TEST_1793350000');
+  assert.deepEqual(complete.collectionCoverage, { version: 1, scope: 'active_orders', status: 'complete', reason: 'end',
+    pagesRead: 2, pageLimit: 3, seenOrders: 1, activeOrders: 1, trackedOutsideWindow: 0 });
+  const bounded = await createCollector({ maxPages: 1, fetchImpl: taobaoFetch(waiting) })({ platform: 'taobao' }, '_m_h5_tk=TEST_1793350000');
+  assert.equal(bounded.collectionCoverage.status, 'partial'); assert.equal(bounded.collectionCoverage.reason, 'page_limit');
+  const fetchPage = taobaoFetch(waiting);
+  const repeated = await createCollector({ maxPages: 3, fetchImpl: (url, options) => {
+    const target = new URL(url), raw = target.searchParams.get('data');
+    if (raw && JSON.parse(raw).page) target.searchParams.set('data', JSON.stringify({ ...JSON.parse(raw), page: '1' }));
+    return fetchPage(target.href, options);
+  } })({ platform: 'taobao' }, '_m_h5_tk=TEST_1793350000');
+  assert.equal(repeated.collectionCoverage.reason, 'repeated_page'); assert.equal(repeated.collectionCoverage.pagesRead, 2);
+  assert.equal(bounded.orders.length, complete.orders.length);
+});
+
 test('Taobao structured SSR retains every split waybill and never fans one parent code out to all parcels', () => {
   const fields = { multiPackages: { packages: [{ mailNo: 'A', cpCode: 'ZTO' }, { mailNo: 'B', cpCode: 'SF' }] } };
   assert.deepEqual(extractSsrFields(ssr(fields)), fields);

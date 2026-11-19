@@ -33,7 +33,7 @@ public final class OnlineSyncManager {
     private final SharedPreferences metadata;
     private final AssistantStore store;
     private final BackendRoutes routes = new BackendRoutes(BuildConfig.DEBUG);
-    private final InteractionDiagnostics diagnostics = new InteractionDiagnostics();
+    private final InteractionDiagnostics diagnostics;
     // A 304 keeps this coverage; omitted jobs and a restarted process still use the legacy status endpoint.
     private final Set<String> snapshotJobIds = new HashSet<>();
     private long connectionCheckedAt;
@@ -48,10 +48,11 @@ public final class OnlineSyncManager {
         this.context = context.getApplicationContext();
         secrets = SecretStore.online(this.context);
         metadata = this.context.getSharedPreferences("online_metadata", Context.MODE_PRIVATE);
+        diagnostics = new InteractionDiagnostics(this.context.getSharedPreferences("interaction_diagnostics", Context.MODE_PRIVATE));
         store = AssistantStore.get(this.context);
         if (secrets.configured()) {
-            diagnostics.resumeSession();
             aiSessionKey();
+            diagnostics.resumeSession(metadata.getString("aiSessionEpoch", ""));
         }
     }
     public static synchronized OnlineSyncManager get(Context context) {
@@ -241,7 +242,8 @@ public final class OnlineSyncManager {
             if (!hasCapability(online, InteractionDiagnostics.CAPABILITY)) return;
             String base = metadata.getString("baseUrl", "");
             String token = secrets.read();
-            diagnostics.scheduleUpload(expectedSession, base, token, BuildConfig.DEBUG);
+            diagnostics.scheduleUpload(expectedSession, base, token, BuildConfig.DEBUG,
+                    hasCapability(online, InteractionDiagnostics.CORRELATION_CAPABILITY));
         } catch (Exception ignored) {
             // Diagnostics are best effort and never change the originating operation.
         }
@@ -277,7 +279,7 @@ public final class OnlineSyncManager {
                 secrets.clear();
                 throw new IllegalStateException("无法保存绑定信息");
             }
-            diagnostics.startSession();
+            diagnostics.startSession(metadata.getString("aiSessionEpoch", ""));
             connectionCheckedAt = 0;
             store.dispatch("syncMeta", copyFamilyScope(new JSONObject().put("bound", true).put("baseUrl", baseUrl).put("deviceId", deviceId)
                     .put("accounts", safeAccounts(response.getJSONArray("accounts"))).put("families", safeFamilies(response.optJSONArray("families"))).put("jobs", new JSONArray()).put("lastSuccessAt", 0).put("errorCode", "").put("error", ""), response));
@@ -285,7 +287,7 @@ public final class OnlineSyncManager {
             return synchronize(false, null);
         } catch (Exception failure) {
             JSONObject result = recordFailure(failure);
-            if (secrets.configured()) diagnostics.resumeSession();
+            if (secrets.configured()) diagnostics.resumeSession(metadata.getString("aiSessionEpoch", ""));
             return result;
         }
     }
@@ -392,16 +394,28 @@ public final class OnlineSyncManager {
         return synchronize(force, localOrderId, allowCollection, localOrderId == null ? (force ? "manual" : "passive") : "order");
     }
     private JSONObject synchronize(boolean force, String localOrderId, boolean allowCollection, String reason) throws Exception {
-        long startedAt = android.os.SystemClock.elapsedRealtime();
-        String diagnosticsSession = diagnostics.currentSession();
-        JSONObject result = synchronizeCore(force, localOrderId, allowCollection, diagnosticsSession);
-        JSONObject online = result == null ? null : result.optJSONObject("online");
-        diagnostics.recordSync(diagnosticsSession, reason, online != null && online.optString("errorCode").isEmpty() ? "success" : "error",
-                0, android.os.SystemClock.elapsedRealtime() - startedAt, 1);
-        scheduleDiagnosticsUpload(result, diagnosticsSession);
-        return result;
+        InteractionDiagnostics.Operation operation = diagnostics.begin(reason);
+        JSONObject result = null;
+        boolean completed = false;
+        try {
+            result = synchronizeCore(force, localOrderId, allowCollection, operation);
+            JSONObject online = result == null ? null : result.optJSONObject("online");
+            if (online != null && !online.optString("errorCode").isEmpty())
+                operation.fail("sync", new OnlineClient.Failure(online.optString("errorCode"), ""));
+            completed = true;
+            return result;
+        } catch (Exception failure) {
+            operation.fail("sync", failure);
+            completed = true;
+            throw failure;
+        } finally {
+            if (completed) {
+                operation.finish();
+                scheduleDiagnosticsUpload(result, operation.session);
+            }
+        }
     }
-    private JSONObject synchronizeCore(boolean force, String localOrderId, boolean allowCollection, String diagnosticsSession) throws Exception {
+    private JSONObject synchronizeCore(boolean force, String localOrderId, boolean allowCollection, InteractionDiagnostics.Operation operation) throws Exception {
         if (!secrets.configured()) return localOrderId == null ? store.snapshot()
                 : recordFailure(new OnlineClient.Failure("not_bound", "请先绑定线上账号，再刷新此订单"));
         try {
@@ -413,10 +427,10 @@ public final class OnlineSyncManager {
             JSONObject binding = store.snapshot().getJSONObject("online");
             String baseUrl = metadata.getString("baseUrl", ""), deviceId = metadata.getString("deviceId", "");
             if (!binding.optBoolean("bound") || !baseUrl.equals(binding.optString("baseUrl")) || !deviceId.equals(binding.optString("deviceId")))
-                store.dispatch("syncMeta", new JSONObject().put("bound", true).put("baseUrl", baseUrl).put("deviceId", deviceId));
+                store.dispatch("syncMeta", new JSONObject().put("bound", true).put("baseUrl", baseUrl).put("deviceId", deviceId), operation);
             boolean start = force || localOrderId != null;
             // Refresh authorization before reading queued operations or jobs; revoked family work must not block other families.
-            JSONObject latest = pullSnapshot(client, metadata.getInt("importVersion", 0) < IMPORT_VERSION || start, diagnosticsSession);
+            JSONObject latest = pullSnapshot(client, metadata.getInt("importVersion", 0) < IMPORT_VERSION || start, operation);
             JSONArray queued = store.snapshot().optJSONArray("operations");
             if (queued != null) for (int offset = 0; offset < queued.length(); offset += 100) {
                 JSONArray batch = operationBatch(queued, offset);
@@ -425,17 +439,30 @@ public final class OnlineSyncManager {
                 try {
                     operationResponse = client.request("POST", "/v1/operations", new JSONObject().put("operations", batch), null);
                 } catch (Exception failure) {
-                    diagnostics.recordOperations(diagnosticsSession, "error", 0,
-                            android.os.SystemClock.elapsedRealtime() - operationStartedAt, batch.length(), 0, "error");
+                    operation.fail("request", failure);
+                    operation.emit("operations", "request", "request", "error", 0,
+                            android.os.SystemClock.elapsedRealtime() - operationStartedAt, batch.length(), 0, "error", null);
                     throw failure;
                 }
-                JSONArray applied = operationResponse.body.optJSONArray("appliedIds");
-                JSONArray accepted = acknowledged(batch, applied);
-                if (accepted.length() > 0) store.dispatch("syncAck", new JSONObject().put("appliedIds", accepted));
-                diagnostics.recordOperations(diagnosticsSession, accepted.length() == batch.length() ? "success" : "error", operationResponse.status,
-                        android.os.SystemClock.elapsedRealtime() - operationStartedAt, batch.length(), accepted.length(),
-                        accepted.length() == batch.length() ? "applied" : "rejected");
-                if (accepted.length() != batch.length()) throw new OnlineClient.Failure("operations_pending", "部分离线操作尚未获后台确认，请检查授权后重试");
+                operation.emit("operations", "request", "request", "success", operationResponse.status,
+                        android.os.SystemClock.elapsedRealtime() - operationStartedAt, batch.length(), 0, null, null);
+                long ackStartedAt = android.os.SystemClock.elapsedRealtime();
+                int acceptedCount = 0;
+                try {
+                    JSONArray applied = operationResponse.body.optJSONArray("appliedIds");
+                    JSONArray accepted = acknowledged(batch, applied);
+                    acceptedCount = accepted.length();
+                    if (accepted.length() > 0) store.dispatch("syncAck", new JSONObject().put("appliedIds", accepted), operation);
+                    if (accepted.length() != batch.length()) throw new OnlineClient.Failure("operations_pending", "部分离线操作尚未获后台确认，请检查授权后重试");
+                    operation.emit("operations", "import", "ack", "success", 0,
+                            android.os.SystemClock.elapsedRealtime() - ackStartedAt, batch.length(), accepted.length(), "applied", null);
+                } catch (Exception failure) {
+                    operation.fail("ack", failure);
+                    operation.emit("operations", "import", "ack", "error", 0,
+                            android.os.SystemClock.elapsedRealtime() - ackStartedAt, batch.length(), acceptedCount,
+                            failure instanceof OnlineClient.Failure && "operations_pending".equals(((OnlineClient.Failure) failure).code) ? "rejected" : "error", null);
+                    throw failure;
+                }
             }
             JSONObject online = store.snapshot().optJSONObject("online");
             JSONArray jobs = authorizedJobs(safeJobs(online == null ? null : online.optJSONArray("jobs")), latest == null ? online : latest);
@@ -453,7 +480,19 @@ public final class OnlineSyncManager {
                     if (!orderId.matches("[0-9a-f]{32}")) throw new OnlineClient.Failure("order_unavailable", "此订单无法刷新，请重新同步后选择订单");
                     path = "/v1/orders/" + orderId + "/refresh";
                 }
-                JSONObject result = client.request("POST", path, conditional ? new JSONObject().put("onlyIfStale", true) : new JSONObject(), null).body;
+                long requestStartedAt = android.os.SystemClock.elapsedRealtime();
+                JSONObject result;
+                try {
+                    OnlineClient.Response response = client.request("POST", path, conditional ? new JSONObject().put("onlyIfStale", true) : new JSONObject(), null);
+                    operation.emit("sync_job", "request", "request", "success", response.status,
+                            android.os.SystemClock.elapsedRealtime() - requestStartedAt, 0, 0, null, null);
+                    result = response.body;
+                } catch (Exception failure) {
+                    operation.fail("request", failure);
+                    operation.emit("sync_job", "request", "request", "error", 0,
+                            android.os.SystemClock.elapsedRealtime() - requestStartedAt, 0, 0, null, null);
+                    throw failure;
+                }
                 if (!Boolean.TRUE.equals(result.opt("accepted")) || result.optJSONArray("jobs") == null) throw invalidResponse();
                 JSONArray started = safeJobs(result.getJSONArray("jobs"));
                 if (started.length() == 0 && !conditional) throw new OnlineClient.Failure("no_accounts", "没有可刷新的线上账号，请检查后台账号与设备授权");
@@ -462,11 +501,21 @@ public final class OnlineSyncManager {
             }
             if (!start && poll) {
                 // One status request per pending task; collection itself is never waited on in this thread.
-                jobs = pollJobs(client, jobs, snapshotJobIds);
+                long pollStartedAt = android.os.SystemClock.elapsedRealtime();
+                try {
+                    jobs = pollJobs(client, jobs, snapshotJobIds);
+                    operation.emit("sync_job", "request", "request", "success", 0,
+                            android.os.SystemClock.elapsedRealtime() - pollStartedAt, 0, 0, null, null);
+                } catch (Exception failure) {
+                    operation.fail("request", failure);
+                    operation.emit("sync_job", "request", "request", "error", 0,
+                            android.os.SystemClock.elapsedRealtime() - pollStartedAt, 0, 0, null, null);
+                    throw failure;
+                }
             }
             // Save new task progress before the next request so a failed pull can resume it.
-            if (start || poll) store.dispatch("syncMeta", new JSONObject().put("jobs", jobs));
-            if (start || poll || queued != null && queued.length() > 0) latest = pullSnapshot(client, false, diagnosticsSession);
+            if (start || poll) store.dispatch("syncMeta", new JSONObject().put("jobs", jobs), operation);
+            if (start || poll || queued != null && queued.length() > 0) latest = pullSnapshot(client, false, operation);
             acknowledgeStationRules(client);
             long now = System.currentTimeMillis();
             // Snapshot import may have retired an old cooldown after a newer account success.
@@ -474,14 +523,14 @@ public final class OnlineSyncManager {
             jobs = authorizedJobs(safeJobs(refreshed.optJSONArray("jobs")), latest == null ? refreshed : latest);
             String jobError = jobsError(jobs);
             JSONObject snapshot = store.dispatch("syncMeta", new JSONObject().put("bound", true)
-                    .put("jobs", jobs).put("lastSuccessAt", now).put("errorCode", jobError.isEmpty() ? "" : "collection_incomplete").put("error", jobError));
+                    .put("jobs", jobs).put("lastSuccessAt", now).put("errorCode", jobError.isEmpty() ? "" : "collection_incomplete").put("error", jobError), operation);
             WidgetRenderer.updateAll(context);
             OnlineSyncScheduler.configureEnhancement(context, snapshot);
             scheduleStationCandidates();
             scheduleMatchingFeedback();
             scheduleRecognitionIssues();
             return snapshot;
-        } catch (Exception failure) { return recordFailure(failure); }
+        } catch (Exception failure) { operation.fail("sync", failure); return recordFailure(failure); }
     }
     static boolean needsConditionalSync(JSONObject online, JSONArray jobs, long now) throws Exception {
         if (!hasCapability(online, "conditionalSync")) return false;
@@ -503,52 +552,76 @@ public final class OnlineSyncManager {
         }
         return false;
     }
-    private JSONObject pullSnapshot(OnlineClient client, boolean full, String diagnosticsSession) throws Exception {
+    private JSONObject pullSnapshot(OnlineClient client, boolean full, InteractionDiagnostics.Operation operation) throws Exception {
         JSONObject current = store.snapshot().getJSONObject("online");
         if (current.optBoolean("needsPickupSync")) full = true;
         if (metadata.getInt("importVersion", 0) < IMPORT_VERSION) {
-            if (!metadata.edit().remove("etag").commit()) throw new IllegalStateException("无法重置同步游标");
+            if (!metadata.edit().remove("etag").commit()) {
+                IllegalStateException failure = new IllegalStateException("无法重置同步游标");
+                operation.fail("cursor_commit", failure);
+                throw failure;
+            }
             full = true;
         }
         String version = full ? "" : current.optString("dataVersion");
+        operation.version(current.optString("dataVersion"));
         String path = "/v1/snapshot?view=compact" + (version.matches("[a-f0-9]{64}") ? "&dataVersion=" + version : "");
         long snapshotStartedAt = android.os.SystemClock.elapsedRealtime();
         OnlineClient.Response response;
         try {
             response = client.request("GET", path, null, full ? "" : metadata.getString("etag", ""));
         } catch (Exception failure) {
-            diagnostics.recordSnapshotFailure(diagnosticsSession, full, android.os.SystemClock.elapsedRealtime() - snapshotStartedAt);
+            operation.fail("request", failure);
+            operation.emit("snapshot", "request", "request", "error", 0,
+                    android.os.SystemClock.elapsedRealtime() - snapshotStartedAt, 0, 0, null, null);
             throw failure;
         }
-        diagnostics.recordSnapshot(diagnosticsSession, response.body != null && response.body.optBoolean("metadataOnly"), response.notModified,
-                full, response.status, android.os.SystemClock.elapsedRealtime() - snapshotStartedAt);
+        boolean metadataOnly = response.body != null && response.body.optBoolean("metadataOnly");
+        operation.emit("snapshot", "request", "request", response.notModified ? "not_modified" : metadataOnly ? "metadata_only" : "success",
+                response.status, android.os.SystemClock.elapsedRealtime() - snapshotStartedAt, 0, 0, null, metadataOnly);
         if (response.notModified) return null;
-        validateSnapshot(response.body);
-        if (response.body.optBoolean("metadataOnly") && !version.equals(response.body.optString("dataVersion")))
-            throw invalidResponse();
-        if (response.body.getLong("serverRevision") < Math.max(current.optLong("serverRevision", -1), current.optLong("metadataRevision", -1)))
-            throw new OnlineClient.Failure("stale_snapshot", "后台数据版本较旧，已保留本地记录，请稍后重试");
-        response.body.put("accounts", safeAccounts(response.body.getJSONArray("accounts")));
-        if (response.body.has("syncJobs")) response.body.put("syncJobs", safeJobs(response.body.getJSONArray("syncJobs")));
-        if (response.body.has("families")) response.body.put("families", safeFamilies(response.body.optJSONArray("families")));
-        if (response.body.has("stationRules")) response.body.put("stationRules", safeStationRules(response.body.optJSONArray("stationRules")));
-        if (response.body.has("serverLogisticsRules")) response.body.put("serverLogisticsRules", safeServerLogisticsRules(response.body.optJSONArray("serverLogisticsRules")));
-        if (response.body.has("matchingFeedback")) response.body.put("matchingFeedback", safeMatchingFeedbackSummary(response.body.optJSONObject("matchingFeedback")));
+        long validationStartedAt = android.os.SystemClock.elapsedRealtime();
+        try {
+            validateSnapshot(response.body);
+            if (response.body.optBoolean("metadataOnly") && !version.equals(response.body.optString("dataVersion")))
+                throw invalidResponse();
+            if (response.body.getLong("serverRevision") < Math.max(current.optLong("serverRevision", -1), current.optLong("metadataRevision", -1)))
+                throw new OnlineClient.Failure("stale_snapshot", "后台数据版本较旧，已保留本地记录，请稍后重试");
+            response.body.put("accounts", safeAccounts(response.body.getJSONArray("accounts")));
+            if (response.body.has("syncJobs")) response.body.put("syncJobs", safeJobs(response.body.getJSONArray("syncJobs")));
+            if (response.body.has("families")) response.body.put("families", safeFamilies(response.body.optJSONArray("families")));
+            if (response.body.has("stationRules")) response.body.put("stationRules", safeStationRules(response.body.optJSONArray("stationRules")));
+            if (response.body.has("serverLogisticsRules")) response.body.put("serverLogisticsRules", safeServerLogisticsRules(response.body.optJSONArray("serverLogisticsRules")));
+            if (response.body.has("matchingFeedback")) response.body.put("matchingFeedback", safeMatchingFeedbackSummary(response.body.optJSONObject("matchingFeedback")));
+            operation.version(response.body.optString("dataVersion"));
+            operation.record("validation", android.os.SystemClock.elapsedRealtime() - validationStartedAt, true);
+        } catch (Exception failure) {
+            operation.fail("validation", failure);
+            operation.record("validation", android.os.SystemClock.elapsedRealtime() - validationStartedAt, false);
+            throw failure;
+        }
         long importStartedAt = android.os.SystemClock.elapsedRealtime();
         try {
             if (response.body.optBoolean("metadataOnly"))
-                store.dispatch("syncMetadata", new JSONObject().put("meta", response.body).put("dataVersion", version).put("syncedAt", System.currentTimeMillis()));
-            else store.dispatch("syncImport", new JSONObject().put("snapshot", response.body).put("syncedAt", System.currentTimeMillis()).put("importVersion", IMPORT_VERSION));
-            diagnostics.recordImport(diagnosticsSession, "success", android.os.SystemClock.elapsedRealtime() - importStartedAt,
-                    response.body.optJSONArray("accounts") == null ? 0 : response.body.getJSONArray("accounts").length());
+                store.dispatch("syncMetadata", new JSONObject().put("meta", response.body).put("dataVersion", version).put("syncedAt", System.currentTimeMillis()), operation);
+            else store.dispatch("syncImport", new JSONObject().put("snapshot", response.body).put("syncedAt", System.currentTimeMillis()).put("importVersion", IMPORT_VERSION), operation);
+            operation.record("import", android.os.SystemClock.elapsedRealtime() - importStartedAt, true);
         } catch (Exception failure) {
-            diagnostics.recordImport(diagnosticsSession, "error", android.os.SystemClock.elapsedRealtime() - importStartedAt, 0);
-            diagnostics.recordSnapshotFailure(diagnosticsSession, full, android.os.SystemClock.elapsedRealtime() - snapshotStartedAt);
+            operation.fail("import", failure);
+            operation.record("import", android.os.SystemClock.elapsedRealtime() - importStartedAt, false);
             throw failure;
         }
         // Neither an old server revision nor an unsuccessful import may advance the conditional cursor.
-        if (!metadata.edit().putString("etag", response.etag).putInt("importVersion", IMPORT_VERSION).commit())
-            throw new IllegalStateException("无法保存同步游标");
+        long cursorStartedAt = android.os.SystemClock.elapsedRealtime();
+        try {
+            if (!metadata.edit().putString("etag", response.etag).putInt("importVersion", IMPORT_VERSION).commit())
+                throw new IllegalStateException("无法保存同步游标");
+            operation.record("cursor_commit", android.os.SystemClock.elapsedRealtime() - cursorStartedAt, true);
+        } catch (Exception failure) {
+            operation.fail("cursor_commit", failure);
+            operation.record("cursor_commit", android.os.SystemClock.elapsedRealtime() - cursorStartedAt, false);
+            throw failure;
+        }
         snapshotJobIds.clear();
         JSONArray includedJobs = response.body.optJSONArray("syncJobs");
         if (includedJobs != null) for (int i = 0; i < includedJobs.length(); i++) snapshotJobIds.add(includedJobs.getJSONObject(i).getString("id"));

@@ -16,14 +16,42 @@ function stationView(value, catalog) {
   const target = catalog.find(item => item.id === selected.id);
   const alias = target && [{ name: target.name }, ...(target.aliases || [])].find(item => stationKey(item.name) === stationKey(value));
   const key = stationKey(value);
-  const cabinet = /(\d+)号?(?:快递柜|自提柜|柜)/u.exec(key);
+  const cabinet = /((?:[A-Za-z]+区|\d+区)?[A-Za-z0-9]+)号?(?:快递柜|自提柜|柜)/u.exec(key);
   const gate = /([东南西北正侧后]{1,2})(?:大)?门/u.exec(key);
-  const building = /(\d+)(?:号楼|栋|幢)/u.exec(key);
+  const building = /((?:[A-Za-z]+区|\d+区)?[A-Za-z0-9]+)(?:号楼|栋|幢)/u.exec(key);
   const subLocation = stationSubLocation(alias?.subLocation || '')
     || [gate ? `${gate[1]}门` : '', building ? `${building[1]}栋` : '', cabinet ? `${cabinet[1]}号柜` : ''].filter(Boolean).join(' ');
   const conflict = !!selected.ambiguous || stationLocationConflict(value, target?.name || '', subLocation);
   return { id: conflict ? '' : selected.id, name: conflict ? '' : selected.name, subLocation: conflict ? '' : subLocation, rawName: value || '',
     displayName: !conflict && selected.name || value || '', conflict };
+}
+
+// Candidate identity comes from exact names or confirmed catalog aliases, never containment.
+export function shipmentArrivalEvidence(shipment, { platform, catalog = [], rules, now = Date.now() } = {}) {
+  const evidence = { methodId: `${['taobao', 'pdd', 'jd'].includes(platform) ? platform : 'other'}.arrival_evidence`, methodVersion: 2, candidates: [] };
+  const events = (shipment.logisticsEvents || []).slice().sort((a, b) => (b.time || 0) - (a.time || 0));
+  if (events.some(event => !timestampKnown(event.time, now) && !event.time && logistics.pickupCycleReset(event.description))) return evidence;
+  const startedAt = shipment.pickupCycle?.evidenceKey && shipment.pickupCycle.evidenceKey !== 'initial' ? shipment.pickupCycle.startedAt || 0 : 0;
+  const current = stationView(shipment.station || logistics.pickupEvidence(events, rules).station, catalog);
+  for (const event of events) {
+    if (event.time > now) continue;
+    if (logistics.pickupCycleReset(event.description) || event.time && event.time < startedAt) break;
+    const pickup = logistics.pickupEvidence([event], rules);
+    const catalogPickup = !pickup.arrivalAt ? logistics.catalogPickupEvidence([event], catalog, rules) : pickup;
+    const candidate = catalogPickup.arrivalAt ? catalogPickup : pickup;
+    if (!timestampKnown(candidate.arrivalAt, now) || logistics.eventTimeIssue(event, now) === 'timeConflict') continue;
+    const station = stationView(candidate.station, catalog);
+    const identity = !current.rawName || !station.rawName || logistics.genericPickupStation(station.rawName) || stationKey(current.rawName) === stationKey(station.rawName)
+      || current.id && current.id === station.id;
+    const conflict = current.conflict || station.conflict
+      || stationLocationConflict(current.rawName, current.subLocation, station.rawName, station.subLocation, event.description);
+    evidence.candidates.push({ time: candidate.arrivalAt, precision: candidate.arrivalAtPrecision, source: 'platform_event',
+      eventRef: hash(JSON.stringify([event.time, event.timeText || '', event.description, event.location || '', event.provider || '',
+        event.providerStatus || '', event.providerSubStatus || ''])), station: candidate.station || '', stationId: station.id,
+      usableForCurrent: !!identity && !conflict });
+    break;
+  }
+  return evidence;
 }
 
 function timeQuality(shipment, field, events, now, platform, rules) {
@@ -42,12 +70,28 @@ export function projectShipmentView(shipment, { platform, orderStatus = '', cata
   const doorstep = logistics.doorstepEvidence(events, { platform, carrier: shipment.carrier }, now);
   const pickup = logistics.catalogPickupEvidence(events, catalog, rules);
   const textualPickup = logistics.pickupEvidence(events, rules);
-  const rawStation = doorstep.arrivalAt ? '' : shipment.station || pickup.station || textualPickup.station || '';
+  const rawStation = doorstep.arrivalAt ? '' : shipment.station || textualPickup.station || pickup.station || '';
   const station = stationView(rawStation, catalog);
   const stationEvent = rawStation && events.find(event => logistics.pickupArrivalEvent(event.description, rawStation, rules)
     && stationKey(event.description).includes(stationKey(rawStation)));
   if (stationEvent && stationLocationConflict(rawStation, station.name, station.subLocation, stationEvent.description))
     Object.assign(station, { id: '', name: '', subLocation: '', displayName: rawStation, conflict: true });
+  const arrivalEvidence = shipmentArrivalEvidence({ ...shipment, station: rawStation }, { platform, catalog, rules, now });
+  const candidate = arrivalEvidence.candidates[0];
+  const priorCycle = shipment.pickupCycle?.evidenceKey && shipment.pickupCycle.evidenceKey !== 'initial'
+    && shipment.arrivalAt && shipment.arrivalAt <= (shipment.pickupCycle.startedAt || 0);
+  const reset = priorCycle || events.some(event => logistics.pickupCycleReset(event.description) && (!event.time || event.time <= now)
+    && (!event.time || !shipment.arrivalAt || event.time >= shipment.arrivalAt));
+  const structuredArrival = timestampKnown(shipment.arrivalAt, now) && ['locker_arrival', 'locker_created'].includes(shipment.arrivalAtSource)
+    && (!candidate || shipment.arrivalAt >= candidate.time);
+  const stationConflict = !!candidate && !candidate.usableForCurrent && !structuredArrival;
+  const confirmedAlias = candidate?.usableForCurrent && candidate.stationId && candidate.stationId === station.id
+    && stationKey(candidate.station) !== stationKey(rawStation);
+  const trustedArrival = timestampKnown(shipment.arrivalAt, now) && ['platform_event', 'locker_arrival', 'locker_created'].includes(shipment.arrivalAtSource);
+  const completed = !!shipment.picked || effectivePicked(pickupCompletionState(shipment));
+  const arrival = stationConflict || reset && !candidate || shipment.arrivalAt && !timestampKnown(shipment.arrivalAt, now) ? { arrivalAt: 0, arrivalAtSource: 'unknown', arrivalAtPrecision: 'unknown' }
+    : confirmedAlias && !completed && !trustedArrival ? { arrivalAt: candidate.time, arrivalAtSource: candidate.source, arrivalAtPrecision: candidate.precision }
+      : { arrivalAt: shipment.arrivalAt || 0, arrivalAtSource: shipment.arrivalAtSource || 'unknown', arrivalAtPrecision: shipment.arrivalAtPrecision || 'unknown' };
   let status = shipment.status || 'unknown';
   const latest = events.find(event => timestampKnown(event.time, now));
   if (latest && !/预计|即将|将于|申请|预约|准备|是否|疑似|请|未退|没有退|取消退|无需退/.test(latest.description)) {
@@ -64,15 +108,16 @@ export function projectShipmentView(shipment, { platform, orderStatus = '', cata
     && (/WAIT_SELLER_SEND_GOODS|待发货|等待发货|等待卖家发货|卖家待发货|等待出库|正在出库/i.test(orderStatus)
       || [orderStatus, ...events.map(event => event.description)].some(text => /进入.{0,20}仓库|仓库处理中|准备出库|等待出库|正在出库|(?:等待|待)[^，,。；;]{0,12}揽收|正在打包|打包完成|打印完成/.test(text)));
   return { version: 1, status, deliveryMode, awaitingShipment,
-    arrivalAt: shipment.arrivalAt || 0, arrivalAtSource: shipment.arrivalAtSource || 'unknown', arrivalAtPrecision: shipment.arrivalAtPrecision || 'unknown',
+    shippedAt: shipment.shippedAt || 0, shippedAtSource: shipment.shippedAtSource || 'unknown', shippedAtPrecision: shipment.shippedAtPrecision || 'unknown',
+    ...arrival, arrivalEvidence,
     stationSource: shipment.stationSource || 'unknown',
     requiresReceiptConfirmation: !returning && !received && !shipment.archived && !shipment.hidden && !shipment.deleted
       && (deliveryMode === 'doorstep' || status === 'signed' && deliveryMode === 'unknown'),
     station, courierPhones: contacts.phones,
     quality: {
-      arrivalTime: timeQuality(shipment, 'arrivalAt', events, now, platform, rules),
+      arrivalTime: stationConflict ? quality('ambiguous', 'STATION_CONFLICT') : timeQuality({ ...shipment, ...arrival }, 'arrivalAt', events, now, platform, rules),
       shippedTime: timeQuality(shipment, 'shippedAt', events, now, platform, rules),
-      station: station.conflict ? quality('ambiguous', 'STATION_CONFLICT') : station.id ? quality('known', 'STATION_RULE')
+      station: station.conflict || stationConflict ? quality('ambiguous', 'STATION_CONFLICT') : station.id ? quality('known', 'STATION_RULE')
         : rawStation && !logistics.genericPickupStation(rawStation) && (['platform_event', 'locker'].includes(shipment.stationSource)
           || [pickup.station, textualPickup.station].includes(rawStation)) ? quality('known', 'PLATFORM_EVIDENCE') : quality('unknown', 'STATION_NOT_PROVIDED'),
       courier: quality(contacts.state, contacts.reasonCode)
@@ -85,9 +130,9 @@ export class ShipmentViewCache {
     const { platform, orderStatus = '', catalog = [], rules, now = Date.now() } = options;
     const events = shipment.logisticsEvents || [];
     // A future event becoming usable invalidates its projection without a per-second cache key.
-    const evidenceKey = hash(JSON.stringify([1, platform, orderStatus, catalog, rules, shipment.status, shipment.station, shipment.stationSource, shipment.carrier,
+    const evidenceKey = hash(JSON.stringify([2, platform, orderStatus, catalog, rules, shipment.status, shipment.station, shipment.stationSource, shipment.carrier,
       shipment.arrivalAt, shipment.arrivalAtSource, shipment.arrivalAtPrecision, shipment.shippedAt, shipment.shippedAtSource, shipment.shippedAtPrecision,
-      shipment.picked, shipment.pickupCompletion, shipment.archived, shipment.hidden, shipment.deleted, events,
+      shipment.picked, shipment.pickupCompletion, shipment.pickupCycle, shipment.archived, shipment.hidden, shipment.deleted, events,
       events.map(event => timestampKnown(event.time, now)), timestampKnown(shipment.arrivalAt, now), timestampKnown(shipment.shippedAt, now)]));
     let cached = this.entries.get(shipment.id);
     if (cached?.evidenceKey !== evidenceKey) {
