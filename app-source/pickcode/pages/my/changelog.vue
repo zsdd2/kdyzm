@@ -2,6 +2,12 @@
   <view class="changelog-container sf-page">
     <view class="version-list" :class="{ expanded: showOlder }">
       <view class="version-item sf-surface">
+        <view class="version-header"><text class="version-name">v3.2.4 · 私人版</text><text class="version-date">2026-11-20</text></view>
+        <view class="update-list">
+          <view class="update-item"><text class="tag fix">物流</text><text class="content">打开订单详情时自动读取物流轨迹，折叠状态也会显示实际条数</text></view>
+        </view>
+      </view>
+      <view class="version-item sf-surface">
         <view class="version-header"><text class="version-name">v3.2.3 · 私人版</text><text class="version-date">2026-11-20</text></view>
         <view class="update-list">
           <view class="update-item"><text class="tag optimize">效率</text><text class="content">减少订单同步和确认收件时重复查找短信、识别快递公司的开销</text></view>

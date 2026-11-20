@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "version": "3.2.3",
+  "version": "3.2.4",
   "upstreamRepository": "https://github.com/SongZX0106/PickCode",
   "upstreamCommit": "07f9fed59122d7f2210a825aadedc2a913a83176",
   "note": "Production source snapshot with authorized downstream modifications; no private data or workflow history.",
@@ -85,7 +85,7 @@
     {
       "path": "android/app/build.gradle",
       "size": 3561,
-      "sha256": "c78a1bd3b09cff002b7ffb9bdbf9ed415226f747c752ef557dbe8389658876d3"
+      "sha256": "b7b07eb32ae732ad05867f7ab7132fb7fde38fe28bbf3e5978e6aa6d96b312c0"
     },
     {
       "path": "android/app/src/main/AndroidManifest.xml",
@@ -519,8 +519,8 @@
     },
     {
       "path": "components/OrderOverview.vue",
-      "size": 21212,
-      "sha256": "940f794ab7a2878d9d1f27689e93926e0a66ccae6b99f23aaaeff0401e140026"
+      "size": 21318,
+      "sha256": "46681da3c7141c3e7b60e68dabf35c15c0ddb0dbe25291ba5c4cf31d890efb64"
     },
     {
       "path": "components/ParcelJourney.vue",
@@ -590,17 +590,17 @@
     {
       "path": "manifest.json",
       "size": 3241,
-      "sha256": "ccc2dd994adec6c4d4f64388c89f18d36232fe591200471869fe2504a14b424f"
+      "sha256": "b6715fe211302ccd5fa91ecc31dc560f0a4ad0426b6d0c3fd9503ce89910f017"
     },
     {
       "path": "package-lock.json",
       "size": 256607,
-      "sha256": "4ff96c18044e09d51abd2d42f83707e33eec87dd878e2adcb05b94ea0c80c663"
+      "sha256": "a84946fc16ec21bfafcc0b90bfba8093574662f4489a3372b950aa331b3ad46f"
     },
     {
       "path": "package.json",
       "size": 1727,
-      "sha256": "1be82df6586a15513a70146b22f16f2703d5e78c6f45b12db90ff93bfb709618"
+      "sha256": "67dd96f7e7ed2aabc3be67ea5c3828240f6fde585168c580d12fff0295ec4cce"
     },
     {
       "path": "pages.json",
@@ -629,8 +629,8 @@
     },
     {
       "path": "pages/my/changelog.vue",
-      "size": 52809,
-      "sha256": "088eb2b695e95026fc95d6207b40808559a3147db94290f122f20339efc5b2d7"
+      "size": 53259,
+      "sha256": "cac3db636c6e840913329738189e8b865ee8419d1391c8ba6ea5bdc8ee5b7c25"
     },
     {
       "path": "pages/my/faq.vue",
@@ -754,8 +754,8 @@
     },
     {
       "path": "services/assistant.js",
-      "size": 44503,
-      "sha256": "e2fc98412f6053f21d107ea66ebfa71eb943294edfad6ce3dbc661a6681535c4"
+      "size": 44541,
+      "sha256": "f3a73eeb3a9015530a07fc521d4dd979f90c72573f76617e83098ed205cfb4f4"
     },
     {
       "path": "services/item-patch.js",
@@ -2642,7 +2642,7 @@
     {
       "path": "README.md",
       "size": 2054,
-      "sha256": "d4b1ff283702fa6c8382b2142150321ced1e12996801f6193a491e525b2c1971"
+      "sha256": "0698e21df3209edc59e27c6afeb05332a2ebc4b084e7f4e7539a3a5204d375b1"
     },
     {
       "path": ".gitignore",

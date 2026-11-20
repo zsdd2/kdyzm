@@ -598,8 +598,8 @@ export function scanAndMatch() {
   return smsRefreshInFlight;
 }
 const detailRequests = new Map();
-export function loadShipmentDetails(id) {
-  const key = bindingEpoch + ':' + id;
+export function loadShipmentDetails(id, detailKey = '') {
+  const key = JSON.stringify([bindingEpoch, id, detailKey]);
   if (detailRequests.has(key)) return detailRequests.get(key);
   const operation = ready().then(() => request('shipmentDetails', { id })).then(changed)
     .finally(() => { if (detailRequests.get(key) === operation) detailRequests.delete(key); });
