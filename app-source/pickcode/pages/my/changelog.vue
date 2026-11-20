@@ -2,6 +2,12 @@
   <view class="changelog-container sf-page">
     <view class="version-list" :class="{ expanded: showOlder }">
       <view class="version-item sf-surface">
+        <view class="version-header"><text class="version-name">v3.2.3 · 私人版</text><text class="version-date">2026-11-20</text></view>
+        <view class="update-list">
+          <view class="update-item"><text class="tag optimize">效率</text><text class="content">减少订单同步和确认收件时重复查找短信、识别快递公司的开销</text></view>
+        </view>
+      </view>
+      <view class="version-item sf-surface">
         <view class="version-header"><text class="version-name">v3.2.2 · 私人版</text><text class="version-date">2026-11-20</text></view>
         <view class="update-list">
           <view class="update-item"><text class="tag optimize">同步</text><text class="content">同步时间和任务进度更新复用已有订单，减少重复计算，保留离线确认</text></view>

@@ -3,6 +3,7 @@ var PickCodeCore = (function () {
   'use strict';
   var logistics = typeof PickCodeLogistics !== 'undefined' ? PickCodeLogistics : globalThis.PickCodeLogistics;
   var stationRecognitionCache={};
+  var carrierRecognitionCache=Object.create(null);
   var snapshotIndex=null,matchingIndex=null;
   function text(value, max) { return typeof value === 'string' ? value.slice(0, max || 4096) : ''; }
   function productImageUrl(value) {
@@ -118,13 +119,13 @@ var PickCodeCore = (function () {
   }
   function initial() { return { version: 1, sequence: 0, items: [], sources: [], rules: builtins(), settings: { autoScan: false, widgetPrivacy: false, stationEnhancement: false }, lastScanAt: 0, summary: { added: 0, reminders: 0, ignored: 0 }, migrated: false }; }
   function byId(list, id) {
-    var active=snapshotIndex||matchingIndex,index=active&&(list===active.state.orders?active.orders:list===active.state.shipments?active.shipments:null);
+    var active=snapshotIndex||matchingIndex,index=active&&(list===active.state.orders?active.orders:list===active.state.shipments?active.shipments:list===active.state.sources?active.sources:null);
     if(index&&typeof id==='string')return index[id];
     for(var i=0;i<list.length;i++)if(list[i].id===id)return list[i];
   }
   function entityIds(list) { var result=Object.create(null);list.forEach(function(x){if(typeof x.id==='string'&&!result[x.id])result[x.id]=x;});return result; }
   function snapshotLookups(state) {
-    var index={state:state,orders:entityIds(state.orders),shipments:entityIds(state.shipments),groups:Object.create(null),codes:Object.create(null)};
+    var index={state:state,orders:entityIds(state.orders),shipments:entityIds(state.shipments),sources:entityIds(state.sources),groups:Object.create(null),codes:Object.create(null)};
     state.items.forEach(function(item){if(!item.mergedInto)item.members.forEach(function(member){if(!member.closedCycleId&&typeof member.shipmentId==='string'&&!index.groups[member.shipmentId])index.groups[member.shipmentId]=item;});});
     return index;
   }
@@ -262,7 +263,7 @@ var PickCodeCore = (function () {
     state.pickupBindingsVersion=1;
     state.sources.forEach(function(source){projectSourceBindings(state,source);});
   }
-  function sourceItem(state,source) { return state.items.filter(function(i){return !i.mergedInto&&!i.deleted&&i.sourceIds.indexOf(source.id)>=0;})[0]; }
+  function sourceItem(state,source) { for(var n=0;n<state.items.length;n++){var i=state.items[n];if(!i.mergedInto&&!i.deleted&&i.sourceIds.indexOf(source.id)>=0)return i;} }
   function sourceParsed(state,source) { var p=source.parsed||parse(source.body,state.rules);return p||{}; }
   function rawSourceStation(state,source) {
     var parsed=sourceParsed(state,source);if(parsed.address)return parsed.address;
@@ -498,7 +499,11 @@ var PickCodeCore = (function () {
     summary.corrections=state.correctionEvents.filter(function(e){return !e.binding||e.binding===feedbackBinding(state);}).slice().reverse().map(function(e){var linked=summary.items.filter(function(r){return r.correctionId===e.id||(e.feedback||[]).some(function(ref){return ref.id===r.id;});}).map(function(r){var value=clone(r),ref=(e.feedback||[]).filter(function(ref){return ref.id===r.id;})[0];if(ref&&ref.revision<r.revision&&r.status!=='withdrawn'&&r.status!=='queued')value.status='superseded';return value;});return {id:e.id,kind:e.kind,originalStation:e.originalStation,stationName:e.stationName,changedAt:e.changedAt,submission:e.submission,items:linked};});
     return summary;
   }
-  function recognizedCarrier(value) { var m=/(中通|圆通|申通|韵达|极兔|顺丰|邮政|京东)/.exec(carrierKey(value));return m?m[1]:''; }
+  function recognizedCarrier(value) {
+    var key=text(value,100),cached=carrierRecognitionCache[key];if(cached!==undefined)return cached;
+    var m=/(中通|圆通|申通|韵达|极兔|顺丰|邮政|京东)/.exec(carrierKey(key));
+    return carrierRecognitionCache[key]=m?m[1]:'';
+  }
   function recognitionEnabled(state) { return state.online.bound&&capability(state,'recognition_workflow_v1'); }
   function recognitionRows(state) { var binding=feedbackBinding(state);return binding?state.recognitionIssues.items.filter(function(row){return row.binding===binding;}):[]; }
   function recognitionRowActive(state,row) {
@@ -840,7 +845,7 @@ var PickCodeCore = (function () {
   function activeMembers(state,i) { return i.members.filter(function(m){var s=byId(state.shipments,m.shipmentId);return !m.closedCycleId&&(!s||!packageHidden(state,s)&&!shipmentArchived(state,s));}); }
   function groupForShipment(state,id) {
     if(snapshotIndex&&snapshotIndex.state===state&&typeof id==='string')return snapshotIndex.groups[id];
-    return state.items.filter(function(i){return !i.mergedInto&&i.members.some(function(m){return !m.closedCycleId&&m.shipmentId===id;});})[0];
+    for(var n=0;n<state.items.length;n++){var i=state.items[n];if(!i.mergedInto&&i.members.some(function(m){return !m.closedCycleId&&m.shipmentId===id;}))return i;}
   }
   function liveSources(state,i) { return i.sourceIds.map(function(id){return sourceFor(state,id);}).filter(function(s){return s&&!s.deleted&&!s.ignored;}); }
   function recordCode(i,code,type,date,sourceId) {
@@ -1077,8 +1082,8 @@ var PickCodeCore = (function () {
     });
   }
   function reconcileOnline(state) {
-    // Reconciliation changes fields and pickup groups, never order/shipment identities.
-    var previousIndex=matchingIndex;matchingIndex={state:state,orders:entityIds(state.orders),shipments:entityIds(state.shipments),retention:Object.create(null)};
+    // Reconciliation changes fields and pickup groups, never order/shipment/source identities.
+    var previousIndex=matchingIndex;matchingIndex={state:state,orders:entityIds(state.orders),shipments:entityIds(state.shipments),sources:entityIds(state.sources),retention:Object.create(null)};
     try {
     state.shipments.forEach(function(s){
       if(!s.arrivalAt||!validCode(s.pickupCode))return;
@@ -1643,7 +1648,7 @@ var PickCodeCore = (function () {
     } finally { snapshotIndex=previousIndex; }
   }
   function newId(state, prefix) { state.sequence++; return prefix + state.sequence; }
-  function sourceFor(state, id) { return state.sources.filter(function (s) { return s.id === id; })[0]; }
+  function sourceFor(state, id) { return byId(state.sources,id); }
   function itemFor(state, id) { var found = state.items.filter(function (i) { return i.id === id && !i.deleted; })[0]; if (!found) fail('记录已变化，请刷新后重试'); return found; }
   function fromParsed(state, source, result) {
     source.kind = result.kind;
@@ -1739,6 +1744,7 @@ var PickCodeCore = (function () {
     }
     extendState(state);
     stationRecognitionCache={};
+    carrierRecognitionCache=Object.create(null);
     restoreStationProjection(state);refreshLocalLogistics(state);applyStationCorrections(state);
     if(action==='testLogisticsRule')return JSON.stringify({state:state,result:logistics.test(p.rule,p.sample)});
     if(action==='syncMeta') {
