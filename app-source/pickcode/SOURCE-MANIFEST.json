@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "version": "3.2.4",
+  "version": "3.2.5",
   "upstreamRepository": "https://github.com/SongZX0106/PickCode",
   "upstreamCommit": "07f9fed59122d7f2210a825aadedc2a913a83176",
   "note": "Production source snapshot with authorized downstream modifications; no private data or workflow history.",
@@ -85,7 +85,7 @@
     {
       "path": "android/app/build.gradle",
       "size": 3561,
-      "sha256": "b7b07eb32ae732ad05867f7ab7132fb7fde38fe28bbf3e5978e6aa6d96b312c0"
+      "sha256": "430a186b71baa5c8fe9a67b6725535f37f7c45e548b9355593dd7d6d83fce883"
     },
     {
       "path": "android/app/src/main/AndroidManifest.xml",
@@ -244,8 +244,8 @@
     },
     {
       "path": "android/app/src/main/java/local/pickcode/assistant/WidgetModel.java",
-      "size": 30448,
-      "sha256": "cff1620456cca19d7f4ac316e2f6984e0424c9caf61bd199a30f15b12eb485de"
+      "size": 30726,
+      "sha256": "f25ac96ec3b05fbe16da197ba8a249a3a7c12fe3d2dc7f992424be8b7c526081"
     },
     {
       "path": "android/app/src/main/java/local/pickcode/assistant/WidgetRenderer.java",
@@ -519,8 +519,8 @@
     },
     {
       "path": "components/OrderOverview.vue",
-      "size": 21318,
-      "sha256": "46681da3c7141c3e7b60e68dabf35c15c0ddb0dbe25291ba5c4cf31d890efb64"
+      "size": 21407,
+      "sha256": "6220691de7cf2dee9086472ad0a1acad0a90b1200b918203fcbb51d754c3ce9a"
     },
     {
       "path": "components/ParcelJourney.vue",
@@ -559,13 +559,13 @@
     },
     {
       "path": "core/package-presentation.js",
-      "size": 9459,
-      "sha256": "0c9d5acb868ca4658bc4e7ab3b1f3b9f678e2c02deb9d7dfff722bcd2ff84aec"
+      "size": 9955,
+      "sha256": "b8495261ac74112d3a45e0c423f06f7328700eabb46de68910ea187a64470bb0"
     },
     {
       "path": "core/pickcode-core.js",
-      "size": 204070,
-      "sha256": "e481a6fc95d735254570dfe6369075b254f50089f4717a655603614681fabebd"
+      "size": 208866,
+      "sha256": "abe9ffcb162d03fd7d63b47659a188f4e705aee244f05ce67c4895271675eba4"
     },
     {
       "path": "docs/android-install.md",
@@ -590,17 +590,17 @@
     {
       "path": "manifest.json",
       "size": 3241,
-      "sha256": "b6715fe211302ccd5fa91ecc31dc560f0a4ad0426b6d0c3fd9503ce89910f017"
+      "sha256": "165a5d079715ef20ac9fe5f54c92e48a2d923044bca864c2d5b378b355105fb9"
     },
     {
       "path": "package-lock.json",
       "size": 256607,
-      "sha256": "a84946fc16ec21bfafcc0b90bfba8093574662f4489a3372b950aa331b3ad46f"
+      "sha256": "72899473669a6b40498fafdb207e1530742d532f5a1d8ee4eedf87048a5dc454"
     },
     {
       "path": "package.json",
       "size": 1727,
-      "sha256": "67dd96f7e7ed2aabc3be67ea5c3828240f6fde585168c580d12fff0295ec4cce"
+      "sha256": "8cc886988f136aff1331c7331b4345c85b1b38d1169ee4c9dbfa2c03c500f862"
     },
     {
       "path": "pages.json",
@@ -629,8 +629,8 @@
     },
     {
       "path": "pages/my/changelog.vue",
-      "size": 53259,
-      "sha256": "cac3db636c6e840913329738189e8b865ee8419d1391c8ba6ea5bdc8ee5b7c25"
+      "size": 53884,
+      "sha256": "64e49ae8ee93cfbe99b1143df721089a33ccad773886f5dd8f08a9440f73df6c"
     },
     {
       "path": "pages/my/faq.vue",
@@ -674,8 +674,8 @@
     },
     {
       "path": "pages/packages/index.vue",
-      "size": 78984,
-      "sha256": "7c931e9666970464bc6f79a220e7ecde79354f8eda5d60f8c01396a512c350b5"
+      "size": 79841,
+      "sha256": "e5939bd36bb6bb51d78bacc290c75416c291a137b740f6333476c2c9f3c4a171"
     },
     {
       "path": "scripts/ai-context.mjs",
@@ -744,8 +744,8 @@
     },
     {
       "path": "server/src/logistics-rules.js",
-      "size": 29049,
-      "sha256": "201f960f2f194365338386efefd60d5bb0b5e9a384f1682bf4410b20286583ed"
+      "size": 30312,
+      "sha256": "04b9be0184c0c30d4a4f7f321e96c58075fa239146cff4e7e5c84ca415399eca"
     },
     {
       "path": "services/ai-service-view.js",
@@ -2642,7 +2642,7 @@
     {
       "path": "README.md",
       "size": 2054,
-      "sha256": "0698e21df3209edc59e27c6afeb05332a2ebc4b084e7f4e7539a3a5204d375b1"
+      "sha256": "a54e3819a43cae357a2a83ad49628c9ed9c0908aa2ed2fd0e82b5e00781dc3ee"
     },
     {
       "path": ".gitignore",

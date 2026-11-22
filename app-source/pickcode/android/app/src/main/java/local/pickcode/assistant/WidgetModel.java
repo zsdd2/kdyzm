@@ -262,11 +262,13 @@ public final class WidgetModel {
             String refund = order.optString("refundStatus").toLowerCase(java.util.Locale.ROOT);
             if ((trade + " " + refund).matches(".*(refunded|refund_success|refund_completed|refund_finished|退款成功|退款完成|已退款).*")) continue;
             JSONArray shipments = order.optJSONArray("shipments");
+            JSONArray sharedShipments = order.optJSONArray("sharedShipmentIds");
+            if ((shipments == null || shipments.length() == 0) && sharedShipments != null && sharedShipments.length() > 0) continue;
             boolean transit = false, unknown = false, waiting = false;
             String warehouse = ".*(进入.{0,20}仓库|仓库处理中|准备出库|等待出库|正在出库|(?:等待|待)[^，,。；;]{0,12}揽收|正在打包|打包完成|打印完成).*";
             if (shipments != null) for (int j = 0; j < shipments.length(); j++) {
                 JSONObject ship = shipments.optJSONObject(j);
-                if (roadUnavailable(ship) || ship.optBoolean("needsReceiptConfirmation") || "signed".equals(ship.optString("status")) || "picked".equals(ship.optString("status"))) continue;
+                if (roadUnavailable(ship) || "unverified".equals(ship.optString("waybillVerification")) || ship.optBoolean("needsReceiptConfirmation") || "signed".equals(ship.optString("status")) || "picked".equals(ship.optString("status"))) continue;
                 // A resolved pickup lives in the upper zone; another parcel in the same order may still be on the road.
                 if (!ship.optString("displayPickupCode").trim().isEmpty() || !ship.optString("pickupCode").trim().isEmpty()) continue;
                 String status = ship.optString("status");

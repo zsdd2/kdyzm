@@ -2,6 +2,13 @@
   <view class="changelog-container sf-page">
     <view class="version-list" :class="{ expanded: showOlder }">
       <view class="version-item sf-surface">
+        <view class="version-header"><text class="version-name">v3.2.5 · 私人版</text><text class="version-date">2026-11-22</text></view>
+        <view class="update-list">
+          <view class="update-item"><text class="tag fix">拼多多</text><text class="content">合并跨订单重复显示的同一运单，对暂缺承运证据的运单标注待核实</text></view>
+          <view class="update-item"><text class="tag fix">站点</text><text class="content">优先显示短信和物流轨迹中的明确取件地址</text></view>
+        </view>
+      </view>
+      <view class="version-item sf-surface">
         <view class="version-header"><text class="version-name">v3.2.4 · 私人版</text><text class="version-date">2026-11-20</text></view>
         <view class="update-list">
           <view class="update-item"><text class="tag fix">物流</text><text class="content">打开订单详情时自动读取物流轨迹，折叠状态也会显示实际条数</text></view>

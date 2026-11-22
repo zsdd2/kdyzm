@@ -90,12 +90,16 @@
         <view class="sheet-handle"></view>
         <view class="sheet-header detail-header"><text>订单详情</text><button role="button" tabindex="0" class="round-btn" aria-label="关闭详情" @click="closePopup('detailPopup')"><uni-icons type="closeempty" size="21" color="#647186" /></button></view>
         <view class="sheet-inner detail-body">
-          <view v-if="selectedOrder.shipments.length > 1" class="shipment-picker" role="group" aria-label="选择包裹"><button v-for="(shipment, index) in selectedOrder.shipments" :key="shipment.id" role="button" tabindex="0" :aria-pressed="shipment.id === detailShipment.id" @click="detailShipmentId = shipment.id">包裹 {{ index + 1 }} · {{ shipment.picked ? '已取' : '未取' }}</button></view>
+          <view v-if="selectedOrder.shipments.length > 1" class="shipment-picker" role="group" aria-label="选择包裹"><button v-for="(shipment, index) in selectedOrder.shipments" :key="shipment.id" role="button" tabindex="0" :aria-pressed="shipment.id === detailShipment.id" @click="detailShipmentId = shipment.id">{{ shipment.waybillVerification === 'unverified' ? '运单待核实' : '包裹 ' + (index + 1) + (shipment.picked ? ' · 已取' : ' · 未取') }}</button></view>
           <OrderOverview :order="selectedOrder" :shipment="detailShipment" :pickup="detailPickup" :sources="detailSources" :status="detailShipment.id ? (detailShipment.picked ? (isReceiptShipment(detailShipment) ? '已收货' : '已取件') : detailShipment.needsPickupAssignment ? '待确认归属' : displayPickupCode(detailShipment) ? '待取件' : shipmentText(detailShipment)) : statusText(selectedOrder)">
             <template #station-action>
               <button v-if="detailShipment.id" type="button" role="button" tabindex="0" class="station-action-button" :data-shipment-station="detailShipment.id" :disabled="!!syncingOrderId" @click="changeShipmentStation(detailShipment, $event)">更换站点</button>
             </template>
           </OrderOverview>
+          <view v-if="selectedOrder.sharedShipmentOrderIds?.length" class="order-tools">
+            <text class="muted-inline">{{ selectedOrder.sharedShipmentPicked ? '共用包裹已取件' : '与其他订单共用同一包裹' }}</text>
+            <button v-for="order in sharedShipmentOrders" :key="order.id" role="button" tabindex="0" @click="openDetails(order)">查看共用包裹</button>
+          </view>
           <text v-if="refreshProgressText || error || notice" class="muted-inline" role="status">{{ refreshProgressText || error || notice }}</text>
           <view v-if="detailMore" class="detail-more" ref="detailMorePanel">
           <view v-if="isExpiredOrder(selectedOrder)" class="archive-meta"><text class="field-label">过期订单</text><text class="muted-inline">{{ archiveReceiptText(selectedOrder) }}</text><text class="muted-inline">{{ archiveSourceText(selectedOrder) }}</text><button role="button" :tabindex="syncingOrderId ? -1 : 0" class="secondary-button" :disabled="!!syncingOrderId" :aria-disabled="!!syncingOrderId" @click="restoreExpiredOrder(selectedOrder)">恢复到当前订单</button></view>
@@ -171,6 +175,7 @@ export default {
     filteredGroups() { return this.dateGroups(this.platformPackages.filter(p => this.showExpired || this.hiddenRecoveryMode || packageProgressMatches(p, this.selectedProgress) || this.journeyCompletion(p)), this.selectedProgress === 'done' && !this.showExpired, true); },
     journeysByOrder() { const result = Object.create(null); for (const order of this.packages) result[order.id] = (order.shipments?.length ? order.shipments.filter(s => !s.hidden) : [{}]).map(s => ({ id: s.id || order.id, journey: parcelJourney(s, order) })); return result; },
     detailShipment() { return this.selectedOrder?.shipments?.find(s => s.id === this.detailShipmentId) || this.summaryShipment(this.selectedOrder || {}) || {}; },
+    sharedShipmentOrders() { return this.packages.filter(order => this.selectedOrder?.sharedShipmentOrderIds?.includes(order.id)); },
     detailPickup() { return this.codes.find(code => (code.members || []).some(member => member.shipmentId === this.detailShipment.id)) || null; },
     detailSources() { return this.detailPickup?.sources || []; },
     selectedOrder() { return [...this.tableData, ...this.archivedData].flatMap(g => g.list).find(p => p.id === this.detailId && (this.selectedFamily === 'all' || (p.familyId || '') === this.selectedFamily)) || null; },
@@ -359,11 +364,12 @@ export default {
       else if (this.activePopup === name) { this.activePopup = ''; this._popupTrigger?.focus?.(); }
     },
     emptyNotice() { if (!this.packages.length) return '可手动添加，或在「我的」绑定后台。'; return '可清除平台或进度筛选，调整角色、时间范围，或显示已隐藏记录。'; },
-    shipmentCount(item) { return (item.shipments || []).filter(s => s && !s.hidden).length; },
+    shipmentCount(item) { return (item.shipments || []).filter(s => s && !s.hidden && s.waybillVerification !== 'unverified').length; },
     summaryShipment(item) {
       const all = (item.shipments || []).filter(s => s && !s.hidden);
       const matching = all.filter(s => this.selectedProgress === 'all' ? ['pickup', 'transit', 'waiting'].includes(shipmentProgress(s, item)) : shipmentProgress(s, item) === this.selectedProgress);
-      const shipments = matching.length ? matching : all;
+      const confirmed = all.filter(s => s.waybillVerification !== 'unverified');
+      const shipments = matching.length ? matching : confirmed.length ? confirmed : all;
       return shipments.find(s => !s.picked && this.displayPickupCode(s)) || shipments.find(s => !s.picked && s.needsReceiptConfirmation) || shipments.find(s => !s.picked) || shipments[0] || null;
     },
     summaryLogistics(item) { if (item.source === 'manual') return item.waybillNo ? '单号 ' + item.waybillNo : ''; const s = this.summaryShipment(item); if (!s) return ''; const event = (s.logisticsEvents || [])[0]; if (event?.message || event?.description) return event.message || event.description; if (item.status === 'transit' || ['transit', 'arrived', 'signed'].includes(s.status)) return [s.carrier, this.shipmentText(s)].filter(Boolean).join(' · '); return s.waybillNo ? '运单 ' + s.waybillNo : '物流待补全'; },
@@ -425,7 +431,7 @@ export default {
       finally { this.syncingOrderId = ''; }
     },
      isReceiptShipment(s) { return Boolean(s.needsReceiptConfirmation || s.platformView?.requiresReceiptConfirmation || s.isHomeDelivery); },
-    shipmentText(s) { if (s.receiptState === 'expired_signed') return '超期自动确认收到'; if (this.isReceiptShipment(s)) return s.picked ? '已收货' : '已送达·待确认'; return ({ transit: '运输中', arrived: '已到站', signed: '物流已签收', unknown: '待更新' })[s.status] || s.status || '待更新'; },
+    shipmentText(s) { if (s.waybillVerification === 'unverified') return '运单待核实'; if (s.receiptState === 'expired_signed') return '超期自动确认收到'; if (this.isReceiptShipment(s)) return s.picked ? '已收货' : '已送达·待确认'; return ({ transit: '运输中', arrived: '已到站', signed: '物流已签收', unknown: '待更新' })[s.status] || s.status || '待更新'; },
     orderDateText(item) { if (this.dateKey(item) !== 'unknown') { if (item.source === 'manual' || item.dateOverride) return (item.source === 'manual' ? '记录日期：' : '人工修正日期：') + String(item.dateOverride || new Date(item.orderDate).toLocaleDateString('sv-SE')); const origin = item.orderDateOrigin === 'detail' ? ' · 平台订单详情' : item.orderDateOrigin === 'list' ? ' · 平台订单列表' : ''; return '下单时间：' + new Date(item.orderDate).toLocaleString('zh-CN', { hour12: false }) + origin; } const checked = new Date(item.dateCheckedAt); return item.dateCheckedAt && !Number.isNaN(checked.getTime()) ? '下单日期待确认 · 最近补查 ' + checked.toLocaleString('zh-CN', { hour12: false }) + '，仍未获得有效日期' : '下单日期待确认 · 等待平台补全'; },
     displayPickupCode(shipment) { return shipment.displayPickupCode || ''; },
      shipmentStation(shipment) {

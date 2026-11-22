@@ -123,7 +123,7 @@ export default {
       if (time && (!this.fieldQuality.arrivalTime || this.fieldQuality.arrivalTime.state === 'known')) return this.time(time);
       return (state === 'arrived' || state === 'awaiting_code') ? '到站时间待核对' : latest ? '时间待核对' : '';
     },
-    logisticsStatus() { const state = this.platformView.status || this.displayShipment.status; if (this.displayShipment.picked) return this.displayShipment.isHomeDelivery ? '已签收' : '已取件'; return ({ arrived: '已到站', awaiting_code: '已到站', transit: '运输中', signed: '已签收', returning: '退回中', returned: '已退回' })[state] || this.status; }
+    logisticsStatus() { const state = this.platformView.status || this.displayShipment.status; if (this.displayShipment.waybillVerification === 'unverified') return '运单待核实'; if (this.displayShipment.picked) return this.displayShipment.isHomeDelivery ? '已签收' : '已取件'; return ({ arrived: '已到站', awaiting_code: '已到站', transit: '运输中', signed: '已签收', returning: '退回中', returned: '已退回' })[state] || this.status; }
   },
   methods: {
     stationDisplayName,

@@ -32,16 +32,21 @@ export function createDiagnosticApi({ store, workflow, interactions }) {
     if (!/^[a-f0-9]{32}$/u.test(id)) fail(400, 'INVALID_DIAGNOSTIC_QUERY', '订单ID无效');
     const value = store.order(id), account = value && store.account(value.accountId);
     if (!account) fail(404, 'NOT_FOUND', '订单不存在');
-    const shipments = store.db.prepare("SELECT data FROM shipments WHERE account_id=? AND json_extract(data,'$.orderId')=? ORDER BY id").all(value.accountId, id)
-      .map(row => JSON.parse(row.data)).filter(shipment => store.shipmentAlias(shipment.id).id === shipment.id)
+    const rows = store.db.prepare("SELECT data FROM shipments WHERE account_id=? AND json_extract(data,'$.orderId')=? ORDER BY id").all(value.accountId, id)
+      .map(row => JSON.parse(row.data));
+    const aliases = new Map(rows.map(shipment => [shipment.id, store.shipmentAlias(shipment.id).alias]).filter(([, alias]) => alias));
+    const projection = store.orderShipmentProjection({ ...value, platform: account.platform }, rows, aliases);
+    const shipments = rows.filter(shipment => !aliases.has(shipment.id))
       .map(shipment => ({ ...pick(shipment, shipmentFields),
+        ...(projection.unverifiedWaybills.has(shipment.id) ? { waybillVerification: 'unverified' } : {}),
         platformView: store.shipmentView(shipment, value),
         pickupCycle: shipment.pickupCycle ? pick(shipment.pickupCycle, ['id', 'startedAt', 'evidenceKey', 'status']) : null,
         pickupCompletion: shipment.pickupCompletion ? { ...pick(shipment.pickupCompletion, ['version', 'autoPicked', 'manualOverride', 'completedAt']),
           evidence: shipment.pickupCompletion.evidence ? pick(shipment.pickupCompletion.evidence, ['kind', 'eventTime', 'timePrecision', 'description', 'provider', 'ruleId', 'ruleVersion']) : null } : null,
         logisticsEvents: (shipment.logisticsEvents || []).map(event => pick(event, eventFields)) }));
     const shipmentIds = new Set(shipments.map(shipment => shipment.id));
-    return { order: { ...pick(value, orderFields), platform: account.platform }, shipments,
+    return { order: { ...pick(value, orderFields), platform: account.platform,
+      ...(projection.sharedShipmentIds.length ? { sharedShipmentIds: projection.sharedShipmentIds } : {}) }, shipments,
       tasks: workflow.tasks().filter(task => task.accountId === value.accountId && (task.orderId === id || shipmentIds.has(task.shipmentId))
         || (task.candidateShipmentIds || []).some(candidate => shipmentIds.has(candidate))).map(task => pick(task, taskFields)) };
   }

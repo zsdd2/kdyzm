@@ -65,12 +65,30 @@ function timeQuality(shipment, field, events, now, platform, rules) {
   return quality('unknown', field === 'shippedAt' ? 'SHIPPED_TIME_NOT_PROVIDED' : 'ARRIVAL_TIME_NOT_PROVIDED');
 }
 
+function explicitAddressForStoredArrival(shipment, events, pickup, catalog, rules, now) {
+  const at = shipment.arrivalAt;
+  if (shipment.stationSource !== 'platform_event' || !logistics.pickupAddressPlaceholder(shipment.station)
+    || shipment.arrivalAtSource !== 'platform_event' || !timestampKnown(at, now) || pickup.arrivalAt !== at
+    || (shipment.pickupCycle?.evidenceKey && shipment.pickupCycle.evidenceKey !== 'initial' && !(at > shipment.pickupCycle.startedAt))) return '';
+  const selected = logistics.catalogStation(shipment.station, catalog);
+  if (selected.id || selected.ambiguous) return '';
+  const sameTime = events.filter(event => event.time === at);
+  if (!sameTime.some(event => logistics.pickupAddress(event.description, rules) === pickup.station)
+    || sameTime.some(event => {
+      const station = logistics.pickupStation(event.description, rules);
+      return logistics.eventTimeIssue(event, now) === 'timeConflict'
+        || station && !logistics.pickupAddressPlaceholder(station) && stationKey(station) !== stationKey(pickup.station);
+    })) return '';
+  return pickup.station;
+}
+
 export function projectShipmentView(shipment, { platform, orderStatus = '', catalog = [], rules, now = Date.now(), evidenceKey = '' } = {}) {
   const events = (shipment.logisticsEvents || []).slice().sort((a, b) => (b.time || 0) - (a.time || 0));
   const doorstep = logistics.doorstepEvidence(events, { platform, carrier: shipment.carrier }, now);
   const pickup = logistics.catalogPickupEvidence(events, catalog, rules);
   const textualPickup = logistics.pickupEvidence(events, rules);
-  const rawStation = doorstep.arrivalAt ? '' : shipment.station || textualPickup.station || pickup.station || '';
+  const explicitAddress = explicitAddressForStoredArrival(shipment, events, textualPickup, catalog, rules, now);
+  const rawStation = doorstep.arrivalAt ? '' : explicitAddress || shipment.station || textualPickup.station || pickup.station || '';
   const station = stationView(rawStation, catalog);
   const stationEvent = rawStation && events.find(event => logistics.pickupArrivalEvent(event.description, rawStation, rules)
     && stationKey(event.description).includes(stationKey(rawStation)));
@@ -130,7 +148,7 @@ export class ShipmentViewCache {
     const { platform, orderStatus = '', catalog = [], rules, now = Date.now() } = options;
     const events = shipment.logisticsEvents || [];
     // A future event becoming usable invalidates its projection without a per-second cache key.
-    const evidenceKey = hash(JSON.stringify([2, platform, orderStatus, catalog, rules, shipment.status, shipment.station, shipment.stationSource, shipment.carrier,
+    const evidenceKey = hash(JSON.stringify([3, platform, orderStatus, catalog, rules, shipment.status, shipment.station, shipment.stationSource, shipment.carrier,
       shipment.arrivalAt, shipment.arrivalAtSource, shipment.arrivalAtPrecision, shipment.shippedAt, shipment.shippedAtSource, shipment.shippedAtPrecision,
       shipment.picked, shipment.pickupCompletion, shipment.pickupCycle, shipment.archived, shipment.hidden, shipment.deleted, events,
       events.map(event => timestampKnown(event.time, now)), timestampKnown(shipment.arrivalAt, now), timestampKnown(shipment.shippedAt, now)]));

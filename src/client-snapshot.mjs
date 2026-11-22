@@ -21,7 +21,7 @@ export function clientSnapshot(snapshot, knownVersion = '') {
 
 export function shipmentDetails(store, device, id) {
   if (!/^[a-f0-9]{32}$/.test(id)) fail(400, 'INVALID_SHIPMENT', '运单标识无效');
-  let shipment = store.shipment(store.shipmentAlias(id).id);
+  let shipment = store.operationShipment(device, id);
   const order = shipment && store.order(shipment.orderId);
   if (!shipment || !store.canRead(device, shipment) || !store.canRead(device, order)) fail(403, 'SCOPE_FORBIDDEN', '运单不在授权范围内');
   shipment = store.normalizedShipment(shipment, order);

@@ -109,6 +109,7 @@ function pickupData(input = {}, old = {}, events = [], rules, now = Date.now(), 
 const genericCarrier = value => /^(?:快递|物流|快递公司|物流公司|其他|其它|其他快递|其它快递|未知|未知快递|未知物流|UNKNOWN|OTHER|EXPRESS)$/iu.test(String(value || '').normalize('NFKC').trim());
 // Older PDD imports stored cabinet.companyName pickup operators in the carrier field.
 const pddCabinetCarrier = (value, platform) => platform === 'pdd' && /(?:代收点|快递超市|驿站|快递柜|自提柜)$/u.test(String(value || '').normalize('NFKC').trim());
+const knownCarriers = new Set(['ZTO', 'YTO', 'STO', 'SF', 'YUNDA', 'JTSD', 'YZPY', 'EMS', 'JD', 'HTKY']);
 const carrierKey = value => {
   if (genericCarrier(value)) return '';
   const name = String(value || '').normalize('NFKC').toUpperCase().replace(/[\s._-]+/gu, '');
@@ -121,6 +122,47 @@ const carrierKey = value => {
 
 const platformPackageKey = input => String(input?.platformPackageKey || input?.platformPackageId || input?.packageKey || input?.packageId || '').trim();
 const identifierSource = input => shortText(input?.identifierSource || input?.source || 'import', 80) || 'import';
+const pddSharedWaybill = 'pdd_shared_waybill';
+const pddCarrierStatuses = new Set(['GOT', 'DEPARTURE', 'ARRIVAL', 'SEND', 'IN_CABINET', 'OUT_CABINET', 'SIGNED', 'DELIVERED']);
+const pddOrderStatuses = new Set(['CREATE', 'CONFIRM', 'PRINT', 'PICK', 'CHECK', 'PACKAGE']);
+const hasPickupDecision = shipment => shipment.picked || shipment.hidden || shipment.deleted || shipment.manualAt
+  || shipment.pickupManualAt || shipment.pickupManualOperation || shipment.pickupCompletion?.manualOverride || shipment.pickupCompletion?.autoPicked;
+const initialPickupCycle = shipment => shipment.pickupCycle?.id && shipment.pickupCycle.status === 'active'
+  && shipment.pickupCycle.evidenceKey === 'initial' && !shipment.pickupCycleHistory?.length;
+const pddCarrierTrack = (shipment, now) => (shipment.logisticsEvents || []).filter(event => event.provider === 'pdd'
+  && pddCarrierStatuses.has(event.providerStatus) && validTime(event.time) && event.time <= now && !logisticsEventTimeIssue(event, now));
+const pddTrackKey = event => JSON.stringify([event.time, event.providerStatus, event.providerSubStatus || '', logisticsEventDescriptionKey(event)]);
+function pddOrderEventKey(event, now) {
+  if (event.provider !== 'pdd' || !validTime(event.time) || event.time > now || logisticsEventTimeIssue(event, now)) return '';
+  if (pddOrderStatuses.has(event.providerStatus)) return pddTrackKey(event);
+  if (!event.providerStatus && event.providerStatusTag === '已发货' && /^(?:商家|卖家)已发货/u.test(event.description)) {
+    return JSON.stringify([event.time, 'merchant_dispatch']);
+  }
+  return '';
+}
+
+function pddUnverifiedWaybills(shipments, now) {
+  const orderGroups = new Map();
+  for (const shipment of shipments) {
+    if (!orderGroups.has(shipment.orderId)) orderGroups.set(shipment.orderId, []);
+    orderGroups.get(shipment.orderId).push(shipment);
+  }
+  const unverified = new Set();
+  for (const group of orderGroups.values()) {
+    if (group.length < 2) continue;
+    const confirmed = group.filter(shipment => shipment.logisticsState === 'ok' && pddCarrierTrack(shipment, now).length)
+      .map(shipment => ({ waybill: waybillKey(shipment.waybillNo), milestones: new Set(shipment.logisticsEvents.map(event => pddOrderEventKey(event, now)).filter(Boolean)) }));
+    if (!confirmed.length) continue;
+    for (const shipment of group) {
+      if (hasPickupDecision(shipment) || !initialPickupCycle(shipment) || shipment.logisticsTruncated || shipment.pickupCode || shipment.arrivalAt
+        || !['transit', 'unknown'].includes(shipment.status) || !['unavailable', 'empty', 'error'].includes(shipment.logisticsState)) continue;
+      const events = (shipment.logisticsEvents || []).map(event => pddOrderEventKey(event, now));
+      if (events.length >= 2 && events.every(Boolean)
+        && confirmed.some(sibling => sibling.waybill !== waybillKey(shipment.waybillNo) && events.every(key => sibling.milestones.has(key)))) unverified.add(shipment.id);
+    }
+  }
+  return unverified;
+}
 const cycleReset = (events, current, now) => {
   const start = validTime(current?.startedAt);
   return (events || []).filter(event => pickupCycleReset(event?.description || '') && validTime(event?.time) > start && validTime(event?.time) <= validTime(now))
@@ -226,13 +268,13 @@ export class Store {
       }
     }
     if (this.reconcileDuplicateShipments()) changed = true;
+    if (this.reconcilePddSharedWaybills().length) changed = true;
     if (changed) this.revision();
   }
   reconcileDuplicateShipments(accountId = '') {
     const rows = (accountId ? this.db.prepare('SELECT data FROM shipments WHERE account_id=?').all(accountId)
       : this.db.prepare('SELECT data FROM shipments').all()).map(parse).filter(shipment => this.shipmentAlias(shipment.id).id === shipment.id);
     const accounts = new Map(this.accounts().map(account => [account.id, account]));
-    const knownCarriers = new Set(['ZTO', 'YTO', 'STO', 'SF', 'YUNDA', 'JTSD', 'YZPY', 'EMS', 'JD', 'HTKY']);
     const waybillGroups = new Map(), groups = [];
     for (const shipment of rows) {
       const carrier = carrierKey(shipment.carrier), waybill = waybillKey(shipment.waybillNo), account = accounts.get(shipment.accountId);
@@ -275,6 +317,53 @@ export class Store {
           .run(old.id, target.id, target.accountId, account.platform, 'normalized_legacy_identity',
             'Same account, order and normalized waybill with one specific carrier; no conflicting package or manual decision', this.now(), old.pickupCycle.id, target.pickupCycle.id);
         changed++;
+      }
+    }
+    return changed;
+  }
+  reconcilePddSharedWaybills(accountId = '', changedIds) {
+    const accounts = this.accounts().filter(account => account.platform === 'pdd' && (!accountId || account.id === accountId));
+    const now = this.now(), changed = [];
+    for (const account of accounts) {
+      const rows = this.db.prepare('SELECT data FROM shipments WHERE account_id=?').all(account.id).map(parse);
+      const aliases = this.db.prepare('SELECT old_shipment_id,target_shipment_id FROM shipment_aliases WHERE account_id=?').all(account.id);
+      const sources = new Set(aliases.map(alias => alias.old_shipment_id));
+      const targets = new Set(aliases.map(alias => alias.target_shipment_id));
+      const groups = new Map();
+      for (const shipment of rows) {
+        const carrier = carrierKey(shipment.carrier), waybill = waybillKey(shipment.waybillNo);
+        if (sources.has(shipment.id) || pddCabinetCarrier(shipment.carrier, 'pdd') || !knownCarriers.has(carrier) || !/^[A-Z0-9]{8,40}$/u.test(waybill)) continue;
+        const key = JSON.stringify([carrier, waybill]);
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(shipment);
+      }
+      for (const members of groups.values()) {
+        if (members.length < 2 || new Set(members.map(s => s.orderId)).size !== members.length
+          || changedIds && !members.some(s => changedIds.has(s.id))) continue;
+        const first = members[0], familyId = first.familyId || '', archived = !!this.order(first.orderId)?.archived;
+        // Same-number parcels may still be separate platform boxes or belong to a later delivery cycle.
+        if (members.some(s => {
+          const order = this.order(s.orderId);
+          return !order || order.hidden || order.deleted || !!order.archived !== archived
+            || (order.familyId || '') !== familyId || (s.familyId || '') !== familyId || !initialPickupCycle(s)
+            || s.hidden || s.deleted || s.logisticsTruncated || s.logisticsState !== 'ok'
+            || s.status !== first.status || s.shippedAt !== first.shippedAt || s.arrivalAt !== first.arrivalAt
+            || s.station !== first.station || s.pickupCode !== first.pickupCode
+            || this.db.prepare('SELECT 1 FROM shipment_identifiers WHERE shipment_id=? AND platform_package_key<>? LIMIT 1').get(s.id, '');
+        })) continue;
+        const evidence = shipment => pddCarrierTrack(shipment, now).map(pddTrackKey).sort();
+        const expected = evidence(first);
+        if (expected.length < 2 || members.some(s => JSON.stringify(evidence(s)) !== JSON.stringify(expected))) continue;
+        const ids = new Set(members.map(s => s.id));
+        const operated = new Set(this.db.prepare('SELECT data FROM operations').all().map(parse).map(operation => operation.shipmentId).filter(id => ids.has(id)));
+        const retained = members.filter(s => hasPickupDecision(s) || operated.has(s.id) || targets.has(s.id));
+        if (retained.length > 1) continue;
+        const target = retained[0] || members.slice().sort((a, b) => a.id.localeCompare(b.id))[0];
+        for (const old of members.filter(s => s.id !== target.id)) {
+          this.db.prepare(`INSERT INTO shipment_aliases(old_shipment_id,target_shipment_id,account_id,platform,reason,evidence,created_at,source_cycle_id,target_cycle_id) VALUES(?,?,?,?,?,?,?,?,?)`)
+            .run(old.id, target.id, account.id, 'pdd', pddSharedWaybill, 'Same PDD account, carrier, waybill, pickup facts and dated carrier track', now, old.pickupCycle.id, target.pickupCycle.id);
+          changed.push(old.id, target.id);
+        }
       }
     }
     return changed;
@@ -334,10 +423,24 @@ export class Store {
     if (!shipment) fail(resolved.alias ? 409 : 403, resolved.alias ? 'UNRESOLVED_TARGET' : 'SCOPE_FORBIDDEN', resolved.alias ? '包裹目标已无法解析，请重新同步后重试' : '运单不在授权范围内');
     const alias = resolved.alias;
     if (alias && (alias.account_id !== shipment.accountId || !this.canRead(device, shipment))) fail(403, 'SCOPE_FORBIDDEN', '运单不在授权范围内');
+    if (alias?.reason === pddSharedWaybill) {
+      const source = this.shipment(originalId);
+      if (!this.canRead(device, source) || !this.canRead(device, this.order(source.orderId))) fail(403, 'SCOPE_FORBIDDEN', '运单不在授权范围内');
+    }
     if (!this.canRead(device, shipment)) fail(403, 'SCOPE_FORBIDDEN', '运单不在授权范围内');
     return { shipment, alias: resolved.alias };
   }
   operationShipment(device, originalId) { return this.operationShipmentResolution(device, originalId).shipment; }
+  currentOrderShipments(order) {
+    return this.db.prepare("SELECT data FROM shipments WHERE account_id=? AND json_extract(data,'$.orderId')=?").all(order.accountId, order.id)
+      .map(parse).filter(shipment => this.shipmentAlias(shipment.id).id === shipment.id);
+  }
+  orderShipmentProjection(order, rows, aliases) {
+    const current = rows.filter(shipment => !aliases.has(shipment.id));
+    const sharedShipmentIds = [...new Set(rows.map(shipment => aliases.get(shipment.id))
+      .filter(alias => alias?.reason === pddSharedWaybill).map(alias => alias.target_shipment_id))];
+    return { sharedShipmentIds, unverifiedWaybills: order.platform === 'pdd' ? pddUnverifiedWaybills(current, this.now()) : new Set() };
+  }
   revision() {
     this.db.exec('UPDATE meta SET revision=revision+1 WHERE id=1');
     return this.db.prepare('SELECT revision FROM meta WHERE id=1').get().revision;
@@ -718,12 +821,22 @@ export class Store {
         }
         const canonicalCandidates = canonicalIds.map(candidateId => this.shipment(candidateId)).filter(candidate => candidate
           && candidate.accountId === accountId && candidate.orderId === orderId);
-        if (canonicalIds.length > 1 || canonicalCandidates.length !== canonicalIds.length) {
+        const sharedSource = !indexed.length && canonicalIds.length === 1 && !canonicalCandidates.length && sameWaybill.find(candidate => {
+          const { id, alias } = this.shipmentAlias(candidate.id);
+          return id === canonicalIds[0] && alias?.reason === pddSharedWaybill && (!carrier || carrierKey(candidate.carrier) === carrier);
+        });
+        // A linked purchase may report this package again. Its own track must not overwrite the canonical order's evidence.
+        const separatePackage = sharedSource && packageKey && input.logisticsState === 'ok'
+          && validTime(input.logisticsCheckedAt) > validTime(sharedSource.logisticsCheckedAt)
+          && pddCarrierTrack(input, this.now()).length > 0;
+        if (sharedSource && !separatePackage) continue;
+        if (!separatePackage && canonicalCandidates.length !== canonicalIds.length) {
           identityWarnings.push('包裹历史别名解析后存在多个或越权候选，未自动新增包裹，请核对');
           continue;
         }
-        const id = canonicalIds.length === 1 ? canonicalIds[0] : packageKey && observedWaybill.length && !sameWaybill.length
-          ? stableId(accountId, account.platform, orderId, carrier, waybill, 'package', packageKey) : stableId(accountId, account.platform, orderId, carrier, waybill);
+        const id = separatePackage || packageKey && observedWaybill.length && !sameWaybill.length
+          ? stableId(accountId, account.platform, orderId, carrier, waybill, 'package', packageKey)
+          : canonicalIds.length === 1 ? canonicalIds[0] : stableId(accountId, account.platform, orderId, carrier, waybill);
         const old = parse(this.db.prepare('SELECT data FROM shipments WHERE id=?').get(id));
         const { logisticsCheckedAt, logisticsDetailCheckedAt, logisticsUpdatedAt, updatedAt, ...evidence } = input;
         const logisticsEvidenceHash = hash(JSON.stringify([parserKey, evidence]));
@@ -781,6 +894,9 @@ export class Store {
           this.db.prepare('UPDATE shipments SET data=? WHERE id=?').run(JSON.stringify(updated), old.id);
         }
       }
+      if (account.platform === 'pdd' && changedShipmentIds.length) {
+        changedShipmentIds.push(...this.reconcilePddSharedWaybills(accountId, new Set(changedShipmentIds)));
+      }
       // Absence, pagination, refunds and source signatures never change manual state or tombstones.
       const coverage = !partial && collectionCoverage(result.collectionCoverage, this.now());
       this.updateAccount(accountId, { ...(coverage ? { collectionCoverage: coverage } : {}), status: partial ? 'syncing' : 'ok', ...(!partial ? { lastSuccessAt: this.now() } : {}), error: '',
@@ -815,8 +931,23 @@ export class Store {
           ...(['second', 'minute', 'day'].includes(orderDatePrecision) ? { orderDatePrecision } : {}), retention: orderRetention(o, this.now()) };
       });
     const orderById = new Map(orders.map(order => [order.id, order]));
-    const shipments = this.db.prepare('SELECT data FROM shipments ORDER BY id').all().map(parse).filter(visible)
-      .filter(shipment => this.shipmentAlias(shipment.id).id === shipment.id).map(s => {
+    const aliasRows = this.db.prepare('SELECT old_shipment_id,target_shipment_id,account_id,platform,reason,evidence,created_at,source_cycle_id,target_cycle_id FROM shipment_aliases ORDER BY created_at').all();
+    const aliases = new Map(aliasRows.map(row => [row.old_shipment_id, row]));
+    const visibleShipments = this.db.prepare('SELECT data FROM shipments ORDER BY id').all().map(parse).filter(visible);
+    const visibleShipmentsById = new Map(visibleShipments.map(shipment => [shipment.id, shipment]));
+    const orderRows = new Map();
+    for (const shipment of visibleShipments) {
+      if (!orderRows.has(shipment.orderId)) orderRows.set(shipment.orderId, []);
+      orderRows.get(shipment.orderId).push(shipment);
+    }
+    const unverifiedWaybills = new Set();
+    for (const order of orders.filter(item => item.platform === 'pdd')) {
+      const projection = this.orderShipmentProjection(order, orderRows.get(order.id) || [], aliases);
+      const shared = projection.sharedShipmentIds.filter(id => orderById.has(visibleShipmentsById.get(id)?.orderId));
+      if (shared.length) order.sharedShipmentIds = shared;
+      for (const id of projection.unverifiedWaybills) unverifiedWaybills.add(id);
+    }
+    const shipments = visibleShipments.filter(shipment => !aliases.has(shipment.id)).map(s => {
       s = this.normalizedShipment(s, orderById.get(s.orderId));
       // Configured services publish evidence persisted by imports or explicit rule changes.
       const platform = orderById.get(s.orderId)?.platform;
@@ -842,7 +973,7 @@ export class Store {
       const archived = !!orderById.get(s.orderId)?.archived;
       const receipt = retainedSignedShipment(s, archived, this.now());
       const platformView = this.shipmentView(s, orderById.get(s.orderId));
-      return { ...publicShipment, ...(archived ? { archived: true } : {}), ...(receipt || {}), ...(compactCycle ? { pickupCycle: compactCycle } : {}), ...(pickupCycleHistory?.length ? { pickupCycleHistory } : {}), ...pickup, pickupCompletion: pickupCompletionState(s), pickupCode: s.arrivalAt && !pickup.arrivalAt ? '' : s.pickupCode,
+      return { ...publicShipment, ...(unverifiedWaybills.has(s.id) ? { waybillVerification: 'unverified' } : {}), ...(archived ? { archived: true } : {}), ...(receipt || {}), ...(compactCycle ? { pickupCycle: compactCycle } : {}), ...(pickupCycleHistory?.length ? { pickupCycleHistory } : {}), ...pickup, pickupCompletion: pickupCompletionState(s), pickupCode: s.arrivalAt && !pickup.arrivalAt ? '' : s.pickupCode,
         ...(jd || shipping.shippedAt ? shipping : {}), ...manual,
         familyId: s.familyId || '', familyName: s.familyName || '', platformView,
         status: platformView.status, station: platformView.station.rawName, stationSource: platformView.stationSource,
@@ -855,8 +986,8 @@ export class Store {
       .map(({ row, canonicalId }) => ({ accountId: row.account_id, platform: row.platform, shipmentId: canonicalId, ...(canonicalId === row.shipment_id ? {} : { originalShipmentId: row.shipment_id }), orderId: row.order_id,
         platformPackageKey: row.platform_package_key, carrier: row.carrier_raw, carrierKey: row.carrier_key, waybillNo: row.waybill_raw, waybillKey: row.waybill_key, source: row.source,
         createdAt: row.created_at, updatedAt: row.updated_at }));
-    const shipmentAliases = this.db.prepare('SELECT old_shipment_id,target_shipment_id,account_id,platform,reason,evidence,created_at,source_cycle_id,target_cycle_id FROM shipment_aliases ORDER BY created_at').all()
-      .filter(row => visibleShipmentIds.has(row.target_shipment_id)).map(row => ({ oldShipmentId: row.old_shipment_id,
+    const shipmentAliases = aliasRows.filter(row => visibleShipmentIds.has(row.target_shipment_id) && (row.reason !== pddSharedWaybill
+      || orderById.has(visibleShipmentsById.get(row.old_shipment_id)?.orderId))).map(row => ({ oldShipmentId: row.old_shipment_id,
         targetShipmentId: row.target_shipment_id, accountId: row.account_id, platform: row.platform, reason: row.reason, evidence: row.evidence, createdAt: row.created_at,
         ...(row.source_cycle_id ? { sourceCycleId: row.source_cycle_id } : {}), ...(row.target_cycle_id ? { targetCycleId: row.target_cycle_id } : {}) }));
     const familyIds = device.familyIds || [];
@@ -872,7 +1003,8 @@ export class Store {
     });
     const { enabled, aiEnabled } = this.pickupCompletion.config();
     const snapshot = { schemaVersion: 1, serverVersion, capabilities, pickupCompletion: { version: 1, enabled, aiEnabled }, identity: { version: 1 }, serverRevision: this.db.prepare('SELECT revision FROM meta WHERE id=1').get().revision, familyIds, legacyAccountIds: device.legacyAccountIds || [], families, accounts, orders, shipments, shipmentIdentifiers, shipmentAliases,
-      hiddenIds: shipments.filter(s => s.hidden).map(s => s.id), deletedIds: shipments.filter(s => s.deleted).map(s => s.id),
+      hiddenIds: shipments.filter(s => s.hidden).map(s => s.id), deletedIds: [...shipments.filter(s => s.deleted).map(s => s.id),
+        ...shipmentAliases.filter(alias => alias.reason === pddSharedWaybill).map(alias => alias.oldShipmentId)],
       events: shipments.filter(s => s.arrivalAt).map(s => ({ id: stableId(s.id, 'arrival', s.arrivalAt), shipmentId: s.id, arrivedAt: s.arrivalAt, code: s.pickupCode, stationKey: s.station })),
       syncWarnings: accounts.flatMap(a => (a.warnings || []).map(message => ({ accountId: a.id, message }))) };
     const responseLimit = Math.max(0, 3800000 - additionalBytes);
@@ -896,8 +1028,9 @@ export class Store {
     }
     if (Buffer.byteLength(JSON.stringify(snapshot), 'utf8') > responseLimit) {
       // Optional cycle metadata is retained in SQLite and omitted only when the complete response is already over Android's cap.
+      const aliasTargets = new Set(shipmentAliases.map(alias => alias.targetShipmentId));
       for (const shipment of shipments) {
-        if (!shipment.pickupCycle || shipment.pickupCycleHistory?.length) continue;
+        if (!shipment.pickupCycle || shipment.pickupCycleHistory?.length || aliasTargets.has(shipment.id)) continue;
         delete shipment.pickupCycle;
         if (Buffer.byteLength(JSON.stringify(snapshot), 'utf8') <= responseLimit) break;
       }
@@ -996,7 +1129,12 @@ export class Store {
         const resolution = this.operationShipmentResolution(device, operation.shipmentId);
         const shipment = resolution.shipment;
         const currentCycleId = shipment.pickupCycle?.id || '';
-        if (['pick', 'restore', 'resumeAutoPickup'].includes(operation.action)) {
+        const shared = resolution.alias?.reason === pddSharedWaybill;
+        const pickupAction = ['pick', 'restore', 'resumeAutoPickup'].includes(operation.action);
+        let supersededReason = shared && (operation.action !== 'pick' || shipment.picked
+          || currentCycleId !== resolution.alias.target_cycle_id || operation.pickupCycleId !== resolution.alias.source_cycle_id)
+          ? 'shared_waybill' : '';
+        if (pickupAction && !supersededReason) {
           const aliasCycleBridge = resolution.alias && operation.pickupCycleId && operation.pickupCycleId === resolution.alias.source_cycle_id
             && currentCycleId && currentCycleId === resolution.alias.target_cycle_id;
           if (operation.pickupCycleId && currentCycleId && operation.pickupCycleId !== currentCycleId && !aliasCycleBridge) fail(409, 'PICKUP_CYCLE_CONFLICT', '领取周期已变化，请刷新后重试');
@@ -1004,8 +1142,12 @@ export class Store {
             fail(409, 'PICKUP_CYCLE_CONFLICT', '离线领取命令属于旧周期，请刷新后重试');
           }
         }
-        const pickupAction = ['pick', 'restore', 'resumeAutoPickup'].includes(operation.action);
-        const stale = pickupAction && (shipment.pickupManualOperation || shipment.pickupManualAt) && operation.occurredAt < (shipment.pickupManualAt || 0);
+        if (operation.action === 'pick' && !hasPickupDecision(shipment) && ['unavailable', 'empty', 'error'].includes(shipment.logisticsState)
+          && this.account(shipment.accountId)?.platform === 'pdd') {
+          const order = this.order(shipment.orderId);
+          if (order && pddUnverifiedWaybills(this.currentOrderShipments(order), this.now()).has(shipment.id)) supersededReason = 'waybill_unverified';
+        }
+        const stale = !!supersededReason || pickupAction && (shipment.pickupManualOperation || shipment.pickupManualAt) && operation.occurredAt < (shipment.pickupManualAt || 0);
         if (!stale) {
           if (pickupAction) {
             const state = pickupCompletionState(shipment);
@@ -1018,7 +1160,9 @@ export class Store {
           shipment.manualAt = this.now();
           this.db.prepare('UPDATE shipments SET data=? WHERE id=?').run(JSON.stringify(shipment), shipment.id);
         }
-        this.db.prepare('INSERT INTO operations VALUES(?,?,?,?)').run(device.id, operation.id, digest, JSON.stringify({ ...operation, appliedAt: this.now(), status: stale ? 'superseded' : 'applied' }));
+        this.db.prepare('INSERT INTO operations VALUES(?,?,?,?)').run(device.id, operation.id, digest, JSON.stringify({ ...operation,
+          appliedAt: this.now(), status: stale ? 'superseded' : 'applied', ...(supersededReason ? { reason: supersededReason } : {}),
+          ...(shared ? { canonicalShipmentId: shipment.id } : {}) }));
         this.updateAccount(shipment.accountId, {});
         appliedIds.push(operation.id);
       }

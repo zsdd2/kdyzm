@@ -83,6 +83,9 @@ var PickCodeCore = (function () {
     }
     return remaining.trim().slice(0, 120);
   }
+  function preferredSmsAddress(body, address) {
+    return !address || logistics.pickupAddressPlaceholder(address) ? logistics.pickupAddress(body) || address : address;
+  }
   function parse(body, rules, allowFallback) {
     body = normalize(body);
     if (!body || body.length > 4096 || /验证码|动态密码|登录密码|支付密码/.test(body)) return null;
@@ -100,11 +103,14 @@ var PickCodeCore = (function () {
       var company = extract(body, r.rules.express, false);
       if (!company) { var companyMatch = /(?:您的?|的)(中通快递|中通|圆通速递|圆通|申通快递|申通|韵达快递|韵达|极兔速递|极兔|顺丰速运|顺丰|邮政|京东)/.exec(body); company = companyMatch ? companyMatch[1] : signature; }
       var count = /(?:有|共)(\d+)个包裹/.exec(body);
-      return { kind: r.kind, code: code, express: company, address: extract(body, r.rules.address, false), ruleId: r.id, packageCount: count ? Number(count[1]) : 1 };
+      return { kind: r.kind, code: code, express: company, address: preferredSmsAddress(body, extract(body, r.rules.address, false)), ruleId: r.id, packageCount: count ? Number(count[1]) : 1 };
     }
     // Conservative no-code arrival/reminder fallback; address and waybill digits are not codes.
     var fallbackKind = /未取|催取|超\d+天/.test(body) ? 'reminder' : 'arrival';
-    if (allowFallback !== false && sorted.some(function(r){return r.id==='builtin-'+fallbackKind;}) && /快递|速递|驿站|包裹|快递柜/.test(body) && /已到|到达|未取|待取/.test(body)) return { kind: fallbackKind, code: '', express: signature, address: '', ruleId: 'arrival-fallback', packageCount: 1 };
+    if (allowFallback !== false && sorted.some(function(r){return r.id==='builtin-'+fallbackKind;}) && /快递|速递|驿站|包裹|快递柜/.test(body)) {
+      var address = logistics.pickupAddress(body);
+      if (address || /已到|到达|未取|待取/.test(body)) return { kind: fallbackKind, code: '', express: signature, address: address, ruleId: 'arrival-fallback', packageCount: 1 };
+    }
     return null;
   }
   function validateCandidate(candidate, sample, expectedCode) {
@@ -607,6 +613,7 @@ var PickCodeCore = (function () {
   function matchLinkReason(state,shipment,source,ignoreOccupied) {
     if(!boundShipment(state,shipment))return '包裹不在当前授权范围';
     if(packageHidden(state,shipment))return '包裹已隐藏或删除';
+    if(shipment.waybillVerification==='unverified')return '运单待核实';
     if(shipmentArchived(state,shipment))return '包裹已归档到过期订单，可恢复后匹配';
     if(!text(shipment.waybillNo,60).trim())return '暂无有效运单号，请先刷新物流';
     var disposition=shipmentDisposition(shipment);if(disposition&&['returning','returned'].indexOf(disposition.kind)>=0)return '包裹已进入退货流程';
@@ -803,6 +810,25 @@ var PickCodeCore = (function () {
   function boundOrder(state,o) { return !!(o&&o.source==='online'&&boundRecord(state,o)); }
   function boundShipment(state,s) { return !!(s&&boundRecord(state,s)&&boundOrder(state,byId(state.orders,s.orderId))); }
   function capability(state,name) { return (state.online.capabilities||[]).indexOf(name)>=0; }
+  function refreshSavedSmsAddresses(state) {
+    if (state.pickupAddressVersion === 1) return;
+    var corrected = Object.create(null);
+    state.sources.forEach(function(source) {
+      if (!source.parsed || source.deleted || source.ignored) return;
+      var previous = source.parsed.address || '';
+      var address = preferredSmsAddress(source.body, previous);
+      if (address && address !== previous) {
+        source.parsed.address = address;
+        corrected[source.id] = { previous: previous || '未知地址', address: address };
+      }
+    });
+    state.items.forEach(function(item) {
+      if (item.deleted || item.isManual || item.protected || item.stationCorrection) return;
+      var change = corrected[item.sourceId];
+      if (change && item.address === change.previous) item.address = change.address;
+    });
+    state.pickupAddressVersion = 1;
+  }
   function extendState(state) {
     state.orders=state.orders||[]; state.shipments=state.shipments||[]; state.operations=state.operations||[];
     // An old queued operation may already have reached the server. Never add wire fields on retry.
@@ -881,7 +907,7 @@ var PickCodeCore = (function () {
   }
   function queueOperation(state,s,action) {
     if(!boundShipment(state,s))return;
-    var op={id:state.clientId+'-'+newId(state,'op-'),shipmentId:s.remoteId,action:action,occurredAt:Date.now(),serviceKey:s.serviceKey,deviceId:state.online.deviceId};
+    var op={id:state.clientId+'-'+newId(state,'op-'),shipmentId:s.remoteCanonicalId||s.remoteId,action:action,occurredAt:Date.now(),serviceKey:s.serviceKey,deviceId:state.online.deviceId};
     if(action==='pick'){op.pickedAt=timestamp(s.pickedAt);op.wirePickedAt=capability(state,'pickup_confirmed_at_v1');}
     if(['pick','restore','resumeAutoPickup'].indexOf(action)>=0){op.localCycleId=ensurePickupCycle(state,s).id;if(capability(state,'pickup_cycles_v1')&&s.pickupCycle.remoteId)op.pickupCycleId=s.pickupCycle.remoteId;}
     state.operations.push(op);
@@ -939,6 +965,8 @@ var PickCodeCore = (function () {
     if(!next)return false;
     var pending=state.operations.filter(function(op){
       if(op.status==='cycle_closed'||op.shipmentId!==s.remoteId&&(s.remoteAliases||[]).indexOf(op.shipmentId)<0||op.serviceKey!==s.serviceKey||op.deviceId!==state.online.deviceId||['pick','restore','resumeAutoPickup'].indexOf(op.action)<0)return false;
+      var shared=(s.remoteCycleBridges||[]).some(function(bridge){return bridge.sharedWaybill&&bridge.sourceShipmentId===op.shipmentId;});
+      if(shared&&(op.action!=='pick'||next.manualOverride==='picked'||next.autoPicked&&!next.manualOverride))return false;
       if(op.localCycleId&&s.pickupCycle&&op.localCycleId!==s.pickupCycle.id)return false;
       if(!input.pickupCycle)return true;
       var sourceCycle=op.pickupCycleId||s.pickupCycle&&s.pickupCycle.remoteId;
@@ -947,6 +975,7 @@ var PickCodeCore = (function () {
     if(pending.length){
       var latest=pending[pending.length-1];
       next.manualOverride=latest.action==='pick'?'picked':latest.action==='restore'?'pending':'';
+      if(latest.action==='pick'){s.picked=true;s.manualPicked=true;}
       s.pickupManualAt=latest.occurredAt;s.pickupManualOperation=latest.deviceId+':'+latest.id;s.pickupManualAction=latest.action;s.pickupManualPickedAtSent=latest.wirePickedAt===true;
       if(latest.action==='pick'&&latest.pickedAt!==undefined){savePickupTime(s,{at:timestamp(latest.pickedAt),source:'user_confirmed',precision:'second'});s.pickupConfirmedAt=timestamp(latest.pickedAt);s.pickedAtCycleId=ensurePickupCycle(state,s).id;}
       else if(latest.action!=='pick'){clearPickupTime(s);s.pickupConfirmedAt=0;if(latest.action==='resumeAutoPickup')savePickupTime(s,{at:0,source:'unknown',precision:'unknown'});}
@@ -1350,7 +1379,7 @@ var PickCodeCore = (function () {
       detailBindingKey:view?detailBinding(state):undefined,canLoadDetails:!!(view&&boundShipment(state,s)&&!packageHidden(state,s)),platformView:view?clone(view):undefined,deliveryMode:view?view.deliveryMode:undefined,courierPhones:view?clone(view.courierPhones):undefined,fieldQuality:view?clone(view.quality):undefined,evidenceKey:view?view.evidenceKey:undefined,detailState:view?(detailValid?'loaded':detail?'stale':'not_loaded'):undefined,
       orderDate:order?(dateOnly(order.dateOverride)||order.orderDate||0):0,orderDateSource:order?(order.dateOverride?'manual':order.orderDateSource||'unknown'):'unknown',orderDatePrecision:order?(order.dateOverride?'day':order.orderDatePrecision||'unknown'):'unknown',
       shippedAt:s.shippedAt||0,shippedAtSource:s.shippedAtSource||'unknown',shippedAtPrecision:s.shippedAtPrecision||'unknown',pickedAt:timing.at,pickedAtSource:timing.source,pickedAtPrecision:timing.precision,pickedAtCycleId:s.pickedAtCycleId||'',pickupManualAt:s.pickupManualAt||0,pickupManualAction:s.pickupManualAction||'',pickupManualOperation:s.pickupManualOperation||'',pickupConfirmedAt:s.pickupConfirmedAt,
-      canPick:boundShipment(state,s)&&!returning&&!archived,displayPickupCode:pickup?(pickup.conflicts.length?'':pickup.code):'',pickupConflict:!!(pickup&&pickup.conflicts.length),pickupId:pickup?pickup.id:'',needsPickupAssignment:!!(pickup&&pickup.needsPickupAssignment),
+      canPick:boundShipment(state,s)&&!returning&&!archived&&s.waybillVerification!=='unverified',waybillVerification:s.waybillVerification,displayPickupCode:pickup?(pickup.conflicts.length?'':pickup.code):'',pickupConflict:!!(pickup&&pickup.conflicts.length),pickupId:pickup?pickup.id:'',needsPickupAssignment:!!(pickup&&pickup.needsPickupAssignment),
       canLinkPickup:!linkReason,pickupLinkReason:linkReason,arrivalAtSource:arrival.arrivalAtSource,arrivalAtPrecision:arrival.arrivalAtPrecision,stationSource:s.stationSource||'unknown',
       logisticsEvents:events,logisticsState:detailValid?detail.logisticsState:s.logisticsState||'',logisticsError:s.logisticsError?'本次物流查询未成功，已保留历史轨迹':'',logisticsCheckedAt:s.logisticsCheckedAt||0,logisticsUpdatedAt:s.logisticsUpdatedAt||0,logisticsTruncated:detailValid?detail.logisticsTruncated:!!s.logisticsTruncated};
   }
@@ -1360,27 +1389,31 @@ var PickCodeCore = (function () {
     codes.forEach(function(i){var seen=Object.create(null);i.members.forEach(function(m){var key=m.orderId;if(typeof key!=='string')return;if(!seen[key]){(pickupsByOrder[key]||(pickupsByOrder[key]=[])).push(i.id);seen[key]=true;}if(!m.picked)waitingByOrder[key]=true;});});
     return state.orders.map(function(o){
       var indexed=typeof o.id==='string',ships=indexed?shipsByOrder[o.id]||[]:state.shipments.filter(function(s){return s.orderId===o.id;});
-      var active=ships.filter(function(s){return !packageHidden(state,s);});
+      var active=ships.filter(function(s){return !packageHidden(state,s)&&s.waybillVerification!=='unverified';});
+      var shared=(o.sharedShipmentIds||[]).map(function(id){
+        return state.shipments.find(function(s){return s.serviceKey===o.serviceKey&&s.accountId===o.accountId&&(s.familyId||'')===(o.familyId||'')&&s.remoteCanonicalId===id;});
+      }).filter(function(s){return s&&boundOrder(state,o)&&boundShipment(state,s)&&!packageHidden(state,s);});
       var pickupIds=indexed?pickupsByOrder[o.id]||[]:codes.filter(function(i){return i.members.some(function(m){return m.orderId===o.id;});}).map(function(i){return i.id;});
       var waiting=indexed?!!waitingByOrder[o.id]:codes.some(function(i){return i.members.some(function(m){return m.orderId===o.id&&!m.picked;});});
       var unpicked=active.filter(function(s){return !s.picked&&!expiredReceived(state,s);});
       var status=waiting?'pending':active.length&&!unpicked.length?'picked':unpicked.some(function(s){return shipmentStatus(state,s)==='arrived'||(s.status==='unknown'&&s.smsArrivalAt);})?'awaiting_code':unpicked.some(function(s){return shipmentStatus(state,s)==='transit';})?'transit':unpicked.some(function(s){return shipmentStatus(state,s)==='signed';})?'signed':unpicked.some(function(s){return shipmentStatus(state,s)==='returning';})?'returning':unpicked.length&&unpicked.every(function(s){return shipmentStatus(state,s)==='returned';})?'returned':o.source==='manual'?'manual':'unknown';
        var retention=orderRetention(o,Date.now());
        return {id:o.id,source:o.source,familyId:o.familyId||'',familyName:o.familyName||'',platform:o.platform,platformOrderId:o.platformOrderId||'',title:o.title,imageUrl:productImageUrl(o.imageUrl),amount:o.amount,waybillNo:o.waybillNo||'',orderDate:dateOnly(o.dateOverride)||o.orderDate,orderDateSource:o.dateOverride?'manual':o.orderDateSource||(o.source==='manual'?'manual':o.orderDate?'legacy':'unknown'),orderDatePrecision:o.dateOverride?'day':o.orderDatePrecision||'unknown',orderDateOrigin:o.orderDateOrigin||'',dateCheckedAt:o.dateCheckedAt||0,firstSeenAt:o.firstSeenAt||0,tradeStatus:o.tradeStatus||'',status:status,orderStatus:o.orderStatus||'',refundStatus:o.refundStatus||'',archived:retention.archived,retention:retention,archiveRestoredAnchor:o.archiveRestoredAnchor||'',archiveRestoredAt:o.archiveRestoredAt||0,hidden:!!(o.hidden||o.deleted),checked:!!o.checked,shipments:ships.map(function(s){return publicShipment(state,s);}),pickupIds:pickupIds,
+        sharedShipmentIds:shared.map(function(s){return s.id;}),sharedShipmentOrderIds:unique(shared.map(function(s){return s.orderId;})),sharedShipmentPicked:shared.length>0&&shared.every(function(s){return s.picked;}),
         canRefresh:boundOrder(state,o)&&capability(state,'orderRefresh'),canEditDate:boundOrder(state,o)&&capability(state,'orderDateOverride'),dateOverride:o.dateOverride||null,platformOrderDate:o.orderDate||0,platformOrderDateSource:o.orderDateSource||'unknown',dateState:o.dateState||'',dateError:o.dateError?'平台未返回可用下单日期，可重试或手动修改':''};
     }).sort(function(a,b){return b.orderDate-a.orderDate;});
   }
   function currentOperations(state) {return state.operations.filter(function(op){
     if(op.status==='cycle_closed')return false;
     var orderAction=op.action==='setOrderDate'||op.action==='restoreExpiredOrder',owners=orderAction?state.orders:state.shipments,remoteId=orderAction?op.orderId:op.shipmentId;
-    return state.online.bound&&op.serviceKey===state.online.serviceKey&&op.deviceId===state.online.deviceId&&owners.some(function(o){return (o.remoteId===remoteId||!orderAction&&(o.remoteAliases||[]).indexOf(remoteId)>=0)&&o.serviceKey===op.serviceKey&&(orderAction?boundOrder(state,o):boundShipment(state,o));});
+    return state.online.bound&&op.serviceKey===state.online.serviceKey&&op.deviceId===state.online.deviceId&&owners.some(function(o){return (o.remoteId===remoteId||!orderAction&&(o.remoteAliases||[]).indexOf(remoteId)>=0)&&o.serviceKey===op.serviceKey&&(orderAction?boundOrder(state,o):boundShipment(state,o)&&!(op.action==='pick'&&o.waybillVerification==='unverified'));});
     }).map(function(op){if(op.action==='setOrderDate')return {id:op.id,orderId:op.orderId,action:op.action,date:op.date,occurredAt:op.occurredAt};if(op.action==='restoreExpiredOrder')return {id:op.id,orderId:op.orderId,action:op.action,anchorDate:op.anchorDate,occurredAt:op.occurredAt};var value={id:op.id,shipmentId:op.shipmentId,action:op.action,occurredAt:op.occurredAt};if(op.pickupCycleId)value.pickupCycleId=op.pickupCycleId;if(op.action==='pick'&&op.pickedAt!==undefined&&op.wirePickedAt===true)value.pickedAt=op.pickedAt;return value;});}
   function clearPickupCycle(state,shipment,evidence,completion) {
     var previous=clone(ensurePickupCycle(state,shipment));previous.status='closed';previous.closedAt=evidence.time;previous.closeReason='logistics_reroute';previous.completion=clone(completion||shipment.pickupCompletion||{picked:!!shipment.picked,manualPicked:shipment.manualPicked});previous.pickupTime=recordedPickup(shipment);
     shipment.pickupCycleHistory.push(previous);
     state.pickupBindings.filter(function(b){return b.shipmentId===shipment.id&&b.cycleId===previous.id&&(b.status==='confirmed'||b.status==='review_required');}).forEach(function(b){bindingStatus(b,'cycle_closed','logistics_reroute');});
     shipment.pickupCycle={id:newId(state,'cycle-'),startedAt:evidence.time,status:'active',evidenceKey:JSON.stringify([evidence.time,evidence.description])};
-    state.operations.forEach(function(op){if(op.shipmentId===shipment.remoteId&&op.serviceKey===shipment.serviceKey&&['pick','restore','resumeAutoPickup'].indexOf(op.action)>=0&&(op.localCycleId===previous.id||!op.localCycleId&&op.occurredAt<evidence.time)){op.status='cycle_closed';op.closeReason='pickup_cycle_changed';}});
+    state.operations.forEach(function(op){if((op.shipmentId===shipment.remoteId||(shipment.remoteAliases||[]).indexOf(op.shipmentId)>=0)&&op.serviceKey===shipment.serviceKey&&['pick','restore','resumeAutoPickup'].indexOf(op.action)>=0&&(op.localCycleId===previous.id||!op.localCycleId&&op.occurredAt<evidence.time)){op.status='cycle_closed';op.closeReason='pickup_cycle_changed';}});
     delete shipment.manualPicked;shipment.picked=false;
     clearPickupTime(shipment);delete shipment.pickupManualAt;delete shipment.pickupManualAction;delete shipment.pickupManualOperation;delete shipment.pickupConfirmedAt;delete shipment.pickupManualPickedAtSent;
     if(shipment.pickupCompletion)shipment.pickupCompletion={version:1,autoPicked:false,manualOverride:'',completedAt:0,evidence:null};
@@ -1400,22 +1433,25 @@ var PickCodeCore = (function () {
     if(correction&&group.stationCorrection&&group.stationCorrection.id===correction.id&&!activeMembers(state,group).some(function(member){return member.shipmentId;}))delete group.stationCorrection;
   }
   function coalesceShipmentAliases(state,existing,input,aliases) {
-    var target=existing.slice().sort(function(a,b){
+    var shared=aliases.some(function(alias){return alias.reason==='pdd_shared_waybill';});
+    var canonical=shared&&existing.find(function(ship){return (ship.remoteCanonicalId||ship.remoteId)===input.id;});
+    var target=canonical||existing.slice().sort(function(a,b){
       function weight(ship){return state.operations.filter(function(op){return op.shipmentId===ship.remoteId&&op.serviceKey===ship.serviceKey&&op.status!=='cycle_closed';}).length*100+state.pickupBindings.filter(function(binding){return binding.shipmentId===ship.id;}).length*10+(ship.stationCorrection?5:0)+(ship.remoteId===input.id?1:0);}
       return weight(b)-weight(a);
     })[0];
     existing.forEach(function(ship){
       var remote=ship.remoteCanonicalId||ship.remoteId,bridge=aliases.filter(function(a){return a.oldShipmentId===remote;})[0];
       if(remote!==input.id&&(!bridge||!bridge.sourceCycleId||!bridge.targetCycleId||!input.pickupCycle||bridge.targetCycleId!==input.pickupCycle.id||ship.pickupCycle&&ship.pickupCycle.remoteId&&ship.pickupCycle.remoteId!==bridge.sourceCycleId))fail('包裹身份映射缺少可验证的周期桥，请导出数据核对');
-      if(ship!==target&&['manualPicked','manualHidden'].some(function(key){return ship[key]!==undefined&&target[key]!==undefined&&ship[key]!==target[key];}))fail('包裹身份映射与本地人工决定冲突，请导出数据核对');
-      if(ship!==target&&ship.stationCorrection&&target.stationCorrection&&ship.stationCorrection.stationId!==target.stationCorrection.stationId)fail('包裹身份映射与本地站点修正冲突，请导出数据核对');
+      if(ship!==target&&ship.orderId===target.orderId&&['manualPicked','manualHidden'].some(function(key){return ship[key]!==undefined&&target[key]!==undefined&&ship[key]!==target[key];}))fail('包裹身份映射与本地人工决定冲突，请导出数据核对');
+      if(ship!==target&&ship.orderId===target.orderId&&ship.stationCorrection&&target.stationCorrection&&ship.stationCorrection.stationId!==target.stationCorrection.stationId)fail('包裹身份映射与本地站点修正冲突，请导出数据核对');
     });
     state.shipmentIdentityHistory=state.shipmentIdentityHistory||[];
     existing.forEach(function(ship){
       if(ship===target)return;
       state.shipmentIdentityHistory.push({shipment:clone(ship),targetShipmentId:target.id,reason:'server_confirmed_alias',mergedAt:Date.now()});
-      ['manualPicked','manualHidden','stationCorrection'].forEach(function(key){if(target[key]===undefined&&ship[key]!==undefined)target[key]=clone(ship[key]);});
-      if(target.pickedAt===undefined&&ship.pickedAt!==undefined){savePickupTime(target,recordedPickup(ship));target.pickedAtCycleId=ensurePickupCycle(state,target).id;['pickupManualAt','pickupManualAction','pickupManualOperation','pickupConfirmedAt','pickupManualPickedAtSent'].forEach(function(key){if(ship[key]!==undefined)target[key]=ship[key];});}
+      var sameOrder=ship.orderId===target.orderId;
+      (sameOrder?['manualPicked','manualHidden','stationCorrection']:['stationCorrection']).forEach(function(key){if(target[key]===undefined&&ship[key]!==undefined)target[key]=clone(ship[key]);});
+      if(sameOrder&&target.pickedAt===undefined&&ship.pickedAt!==undefined){savePickupTime(target,recordedPickup(ship));target.pickedAtCycleId=ensurePickupCycle(state,target).id;['pickupManualAt','pickupManualAction','pickupManualOperation','pickupConfirmedAt','pickupManualPickedAtSent'].forEach(function(key){if(ship[key]!==undefined)target[key]=ship[key];});}
       if(target.manualPicked!==undefined)target.picked=target.manualPicked;
       if(target.manualHidden!==undefined)target.hidden=target.manualHidden;
       target.remoteAliases=unique((target.remoteAliases||[]).concat(ship.remoteId,ship.remoteCanonicalId||'',ship.remoteAliases||[]));
@@ -1425,7 +1461,7 @@ var PickCodeCore = (function () {
         var seen={};item.members=item.members.filter(function(member){if(!member.shipmentId||member.closedCycleId)return true;var previous=seen[member.shipmentId];if(!previous){seen[member.shipmentId]=member;return true;}if(member.independentPicked!==undefined)previous.independentPicked=member.independentPicked;return false;});
         item.history.forEach(function(entry){if(entry.sourceId===ship.id)entry.sourceId=target.id;});
       });
-      state.operations.forEach(function(op){if(op.shipmentId===ship.remoteId&&op.serviceKey===ship.serviceKey&&op.localCycleId===oldCycle)op.localCycleId=newCycle;});
+      state.operations.forEach(function(op){if((op.shipmentId===ship.remoteId||(ship.remoteAliases||[]).indexOf(op.shipmentId)>=0)&&op.serviceKey===ship.serviceKey&&op.localCycleId===oldCycle)op.localCycleId=newCycle;});
       state.sources.forEach(function(source){if(source.retiredCycleShipmentId===ship.id)source.retiredCycleShipmentId=target.id;});
       state.shipments=state.shipments.filter(function(row){return row!==ship;});
     });
@@ -1499,6 +1535,7 @@ var PickCodeCore = (function () {
       if(!o){o={id:id,source:'online',remoteId:text(input.id,200),serviceKey:serviceKey,accountId:text(input.accountId,200)};state.orders.push(o);}
       retainFamily(o,input);
       o.platform=text(input.platform,40)||o.platform||'其他';if(input.platformOrderId!==undefined)o.platformOrderId=text(input.platformOrderId,200);o.title=text(input.title,200)||o.title||'线上包裹';
+      o.sharedShipmentIds=o.platform==='pdd'&&Array.isArray(input.sharedShipmentIds)?unique(input.sharedShipmentIds.filter(function(id){return typeof id==='string'&&id.length>0&&id.length<=200;})):[];
       o.imageUrl=productImageUrl(input.imageUrl)||productImageUrl(o.imageUrl);
       o.amount=typeof input.amount==='number'&&isFinite(input.amount)&&input.amount>=0?input.amount:null;
       var inputDate=timestamp(input.orderDate);
@@ -1532,22 +1569,40 @@ var PickCodeCore = (function () {
       var id=prefix+text(input.id,200),s=byId(state.shipments,id),updated=timestamp(input.updatedAt)||(s&&s.updatedAt)||0;
       var aliasRecords=(Array.isArray(snap.shipmentAliases)?snap.shipmentAliases:[]).filter(function(a){return a&&a.targetShipmentId===input.id&&a.accountId===input.accountId&&(!a.platform||a.platform===order.platform);});
       var aliases=aliasRecords.map(function(a){return text(a.oldShipmentId,200);});
-      var existing=state.shipments.filter(function(ship){return ship.serviceKey===serviceKey&&ship.accountId===input.accountId&&ship.orderId===order.id&&(ship.remoteId===input.id||aliases.indexOf(ship.remoteId)>=0||(ship.remoteAliases||[]).indexOf(input.id)>=0);});
+      var existing=state.shipments.filter(function(ship){
+        if(ship.serviceKey!==serviceKey||ship.accountId!==input.accountId)return false;
+        var remote=ship.remoteCanonicalId||ship.remoteId;
+        if(ship.orderId===order.id)return ship.remoteId===input.id||remote===input.id||aliases.indexOf(remote)>=0||
+          aliases.indexOf(ship.remoteId)>=0||(ship.remoteAliases||[]).indexOf(input.id)>=0;
+        if(order.platform!=='pdd'||(ship.familyId||'')!==(order.familyId||'')||!canReadRecord(scope,ship))return false;
+        var sourceOrder=byId(state.orders,ship.orderId);
+        return sourceOrder&&sourceOrder.platform==='pdd'&&sourceOrder.accountId===order.accountId
+          &&(sourceOrder.familyId||'')===(order.familyId||'')&&canReadRecord(scope,sourceOrder)
+          &&(sourceOrder.sharedShipmentIds||[]).indexOf(input.id)>=0&&aliasRecords.some(function(a){
+            return a.reason==='pdd_shared_waybill'&&a.oldShipmentId===remote&&a.sourceCycleId
+              &&input.pickupCycle&&a.targetCycleId===input.pickupCycle.id&&ship.pickupCycle&&ship.pickupCycle.remoteId===a.sourceCycleId;
+          });
+      });
       if(existing.length>1)s=coalesceShipmentAliases(state,existing,input,aliasRecords);
       if(!s&&existing.length===1)s=existing[0];
       var identityRemap=!!(s&&s.remoteCanonicalId!==input.id&&s.remoteId!==input.id&&aliases.indexOf(s.remoteId)>=0);
-      if(!input.id||!input.orderId||!canReadRecord(scope,{accountId:text(input.accountId,200),familyId:s&&s.familyId||familyId(input.familyId)||order.familyId})||(s&&(s.accountId!==input.accountId||s.orderId!==order.id)))fail('线上运单账号无效');
+      if(!input.id||!input.orderId||!canReadRecord(scope,{accountId:text(input.accountId,200),familyId:s&&s.familyId||familyId(input.familyId)||order.familyId})||(s&&(s.accountId!==input.accountId||s.orderId!==order.id&&existing.indexOf(s)<0)))fail('线上运单账号无效');
       if(!s){s={id:id,remoteId:text(input.id,200),serviceKey:serviceKey,accountId:input.accountId,orderId:order.id,picked:false,hidden:false};state.shipments.push(s);}
-      if(updated<s.updatedAt){importCompletion(state,s,input,Array.isArray(snap.capabilities)&&snap.capabilities.indexOf('pickup_completion_v1')>=0);return;}
+      if(s.orderId!==order.id){
+        delete s.manualHidden;delete s.manualPicked;delete s.pickupConfirmedAt;
+        clearPickupTime(s);s.hidden=false;s.picked=false;s.orderId=order.id;
+      }
+      if(!identityRemap&&updated<s.updatedAt){importCompletion(state,s,input,Array.isArray(snap.capabilities)&&snap.capabilities.indexOf('pickup_completion_v1')>=0);return;}
       // Compact entities have no event history; exact input equality also covers completion changes outside updatedAt.
       var entityInput=input.platformView&&(!input.logisticsEvents||input.logisticsEvents.length===0)?JSON.stringify(input):'';
       if(entityInput&&s.remoteInput===entityInput&&updated===s.updatedAt&&s.platformView&&input.platformView.evidenceKey===s.platformView.evidenceKey&&!aliasRecords.length&&!state.online.needsPickupSync&&!serverChanged&&!rulesChanged&&JSON.stringify(snap.capabilities||[])===JSON.stringify(state.online.capabilities)&&importVersion<=(state.online.importVersion||0))return;
       var platformView=input.platformView!==undefined?normalizedPlatformView(input.platformView):s.platformView;
       s.remoteAliases=unique((s.remoteAliases||[]).concat(aliases,input.id));
       s.remoteCanonicalId=text(input.id,200);
+      s.waybillVerification=order.platform==='pdd'&&input.waybillVerification==='unverified'?'unverified':undefined;
       aliasRecords.forEach(function(alias){
         if(!alias.sourceCycleId||!alias.targetCycleId)return;
-        var bridge={sourceShipmentId:text(alias.oldShipmentId,200),targetShipmentId:text(input.id,200),sourceCycleId:text(alias.sourceCycleId,128),targetCycleId:text(alias.targetCycleId,128)};
+        var bridge={sourceShipmentId:text(alias.oldShipmentId,200),targetShipmentId:text(input.id,200),sourceCycleId:text(alias.sourceCycleId,128),targetCycleId:text(alias.targetCycleId,128),sharedWaybill:alias.reason==='pdd_shared_waybill'};
         s.remoteCycleBridges=(s.remoteCycleBridges||[]).filter(function(previous){return previous.sourceShipmentId!==bridge.sourceShipmentId;});s.remoteCycleBridges.push(bridge);
       });
       var remoteCycle=input.pickupCycle;
@@ -1607,7 +1662,15 @@ var PickCodeCore = (function () {
       rememberPlatformLogistics(s);
       if(entityInput)s.remoteInput=entityInput;else delete s.remoteInput;
     });
-    (snap.deletedIds||[]).forEach(function(id){var o=byId(state.orders,prefix+id),s=byId(state.shipments,prefix+id);if(o)o.deleted=true;if(s)s.deleted=true;});
+    var sharedAliasTargets=Object.create(null);
+    (snap.shipmentAliases||[]).forEach(function(alias){
+      if(alias&&alias.reason==='pdd_shared_waybill')sharedAliasTargets[alias.oldShipmentId]=alias.targetShipmentId;
+    });
+    (snap.deletedIds||[]).forEach(function(id){
+      var o=byId(state.orders,prefix+id),s=byId(state.shipments,prefix+id);
+      if(o)o.deleted=true;
+      if(s&&(!sharedAliasTargets[id]||s.remoteCanonicalId!==sharedAliasTargets[id]))s.deleted=true;
+    });
     (snap.hiddenIds||[]).forEach(function(id){var o=byId(state.orders,prefix+id),s=byId(state.shipments,prefix+id);if(o&&o.manualHidden===undefined)o.hidden=true;if(s&&s.manualHidden===undefined)s.hidden=true;});
     state.online.accounts=publicAccounts(snap.accounts);state.online.families=publicFamilies(snap.families);state.online.familyIds=scope.familyIds;state.online.legacyAccountIds=scope.legacyAccountIds;state.online.hasFamilyScope=scope.hasFamilyScope;state.online.revision=snap.serverRevision;state.online.importVersion=importVersion;state.online.serverVersion=text(snap.serverVersion,40);state.online.capabilities=(Array.isArray(snap.capabilities)?snap.capabilities:[]).filter(function(c){return ['syncJobs','conditionalSync','orderRefresh','orderDateOverride','station_aliases_v1','pickup_completion_v1','pickup_confirmed_at_v1','matching_feedback_v1','station_rule_receipts_v1','recognition_workflow_v1','interaction_diagnostics_v1','interaction_diagnostics_v2','pickup_cycles_v1','order_retention_v1','normalized_shipments_v1','compact_snapshot_v1','shipment_details_v1'].indexOf(c)>=0;});state.online.lastSuccessAt=timestamp(p.syncedAt)||Date.now();state.online.error='';state.online.errorCode='';
     if(capability(state,'pickup_completion_v1')&&snap.pickupCompletion&&snap.pickupCompletion.version===1){
@@ -1738,11 +1801,12 @@ var PickCodeCore = (function () {
     var state = stateJson ? JSON.parse(stateJson) : initial();
     if (state.version !== 1) fail('数据版本不兼容，请保留备份');
     var request = JSON.parse(requestJson), action = request.action, p = request.payload || {}, now = Date.now(), item, source, rule;
-    if(committedJson&&(action==='syncMeta'||action==='syncMetadata')){
+    if(committedJson&&state.pickupAddressVersion===1&&(action==='syncMeta'||action==='syncMetadata')){
       var projected=metadataProjection(state,request,JSON.parse(committedJson));
       if(projected)return JSON.stringify({state:state,result:projected});
     }
     extendState(state);
+    refreshSavedSmsAddresses(state);
     stationRecognitionCache={};
     carrierRecognitionCache=Object.create(null);
     restoreStationProjection(state);refreshLocalLogistics(state);applyStationCorrections(state);
@@ -1818,7 +1882,7 @@ var PickCodeCore = (function () {
       if(!pickedOrder||!Array.isArray(p.shipmentIds)||!selected.length)fail('请选择本次领取的运单');
       if(!boundOrder(state,pickedOrder))fail('订单不属于当前绑定账号，请重新绑定后操作');
       var selectedShips=selected.map(function(id){return byId(state.shipments,id);});
-      if(selectedShips.some(function(s){return !s||s.orderId!==pickedOrder.id||packageHidden(state,s)||!boundShipment(state,s);}))fail('运单已变化，请刷新后重试');
+      if(selectedShips.some(function(s){return !s||s.orderId!==pickedOrder.id||s.waybillVerification==='unverified'||packageHidden(state,s)||!boundShipment(state,s);}))fail('运单已变化，请刷新后重试');
       if(selectedShips.some(function(s){var g=groupForShipment(state,s.id);return g&&g.unassignedPickedCount;}))fail('请先在取件详情确认此前已取包裹');
       selectedShips.forEach(function(s){
         if(action==='resumeAutoPickup'){

@@ -38,8 +38,9 @@ function hasUncollectedPickup(item) {
 }
 
 function isPackageCollected(item) {
-  if (!item || item.source !== 'online' || !Array.isArray(item.shipments) || !item.shipments.length) return false;
-  return item.shipments.every((shipment) => shipment && shipment.picked === true &&
+  if (!item || item.source !== 'online' || !Array.isArray(item.shipments)) return false;
+  const confirmed = item.shipments.filter(shipment => shipment?.waybillVerification !== 'unverified');
+  return confirmed.length > 0 && confirmed.every((shipment) => shipment && shipment.picked === true &&
     shipment.pickupConflict !== true && shipment.needsPickupAssignment !== true);
 }
 
@@ -78,6 +79,7 @@ function packagePlatform(item) {
 
 function shipmentProgress(shipment, order) {
   if (!shipment || typeof shipment !== 'object') return 'other';
+  if (shipment.waybillVerification === 'unverified') return 'other';
   if (['returning', 'returned'].includes(shipment.status)) return 'other';
   const picked = shipment.picked === true;
   const pickedWithoutReviewIssue = picked && shipment.pickupConflict !== true && shipment.needsPickupAssignment !== true;
@@ -117,6 +119,7 @@ function packageProgressMatches(item, key = 'all') {
   if (packagePlatform(item) === 'manual') return progress === 'other';
 
   const shipments = visibleShipments(item);
+  if (item.sharedShipmentIds?.length && !shipments.length) return progress === 'other';
   const matches = value => progress === 'all' ? UNRECEIVED_PROGRESS.includes(value) : value === progress;
   if (shipments.length) return shipments.some(shipment => matches(shipmentProgress(shipment, item)));
   // Hidden shipments are still real shipments: never resurrect them as an order placeholder.
@@ -135,7 +138,9 @@ function aggregateFor(items, progress) {
   const matchingShipments = matchedItems.flatMap((item) => matchingShipmentsFor(item, progress));
   const total = matchedItems.reduce((count, item) => packagePlatform(item) === 'manual'
     ? count
-    : count + Math.max(1, matchingShipmentsFor(item, progress).length), 0);
+    : count + (item.sharedShipmentIds?.length || item.shipments?.some(shipment => shipment?.waybillVerification === 'unverified')
+      ? matchingShipmentsFor(item, progress).filter(shipment => shipment.waybillVerification !== 'unverified').length
+      : Math.max(1, matchingShipmentsFor(item, progress).length)), 0);
   const orders = matchedItems.length;
   return { orders, total,
     onlineOrders: matchedItems.filter((item) => packagePlatform(item) !== 'manual').length,

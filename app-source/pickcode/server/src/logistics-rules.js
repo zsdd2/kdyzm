@@ -11,6 +11,9 @@ var PickCodeLogistics = (function () {
   function text(value) { return typeof value === 'string' || typeof value === 'number' ? String(value).replace(/^\s+|\s+$/g, '') : ''; }
   function stationKey(value) { return text(value).replace(/[\s!"#$%&'()*+,\-./:;<>?=@[\]\\^_`{|}~，。；：！？、（）【】「」“”‘’《》〈〉…·—]/g, ''); }
   function genericPickupStation(value) { return /^(?:菜鸟驿站|驿站|代收点|自提点|自提站|自提柜|快递柜|智能柜|丰巢|丰巢快递柜|快递代收点|代收站|快递站)$/.test(stationKey(value)); }
+  function pickupAddressPlaceholder(value) {
+    return genericPickupStation(value) || /^(?:兔喜生活|兔喜(?:快递)?超市(?:代收点)?)$/.test(stationKey(value));
+  }
   function pickupCycleReset(value) {
     return text(value).split(SPLIT).some(function (part) {
       return /退回|退件|退货|退签|拒签|拒绝?签收|改投|改派|转投|重新(?:派送|投递|揽收)|取出(?:了)?(?:快递柜|自提柜)|离开[^，,。；;！？!?]*(?:驿站|代收点|快递柜)/.test(part)
@@ -69,6 +72,18 @@ var PickCodeLogistics = (function () {
     if (/(?:未|没有|还没|没|不能|不可|不应|不要|不曾|不再|不会|无法|将|即将|准备|待|等待|计划|预计|预定)[^，,。；;！？!?]{0,16}$/.test(value)) return true;
     return kind === 'arrival' && /(?:请|要求|希望|约定|安排|同意|正在)[^，,。；;！？!?]{0,16}$/.test(value);
   }
+  function followingPickupAddress(tail, catalogAlias) {
+    var field = /^[，,]\s*(?:取件|取货|自提)地址\s*(?:为|是)?\s*([:：]?)\s*/.exec(tail);
+    if (!field) return '';
+    var value = tail.slice(field[0].length);
+    var enclosed = /^(?:【([^】\r\n]+)】|「([^」\r\n]+)」|“([^”\r\n]+)”|\[([^\]\r\n]+)\])/.exec(value);
+    if (!enclosed && (!field[1] || /^[【「“\[]/.test(value))) return '';
+    var address = (enclosed ? enclosed[1] || enclosed[2] || enclosed[3] || enclosed[4] : value.split(SPLIT)[0])
+      .split(/(?:营业|工作|服务|取件)时间/)[0];
+    if (FUTURE.test(address)) return '';
+    var station = clean(address, catalogAlias || /[路街巷道弄].{0,12}\d+\s*号|[A-Za-z0-9一二三四五六七八九十]+号柜/.test(address));
+    return pickupAddressPlaceholder(station) ? '' : station;
+  }
   function fragmentMatch(fragment, rules, catalogAlias) {
     var current = fragment.value.split(FUTURE)[0], list = ruleList(rules), i, j, rule, at, suffix, endAt, station, extended, address;
     for (i = 0; i < list.length; i++) {
@@ -96,13 +111,13 @@ var PickCodeLogistics = (function () {
             if (endAt < 0) { at = current.indexOf(rule.starts[j], at + rule.starts[j].length); continue; }
             suffix = suffix.slice(0, endAt);
           }
-          // A completed storage clause may identify its pickup address immediately after a comma.
-          address = !rule.end && rule.kind === 'arrival' && current === fragment.value && /(?:暂存|存放)$/.test(text(suffix))
+          station = clean(suffix, catalogAlias);
+          // The adjacent explicit field supplies the location for the same storage action.
+          address = !rule.end && rule.kind === 'arrival' && current === fragment.value
+            && (/(?:暂存|存放)$/.test(text(suffix)) || pickupAddressPlaceholder(station))
             && !/分拣|转运|分拨|物流中心|营业部|门口|门前|家中|家里|住处|收件人|本人/.test(current)
-            ? /^[，,]\s*(?:取件|取货|自提)地址\s*[:：]\s*([^，,。；;！？!?\n\r]+)/.exec(fragment.tail.slice(fragment.value.length)) : null;
-          if (address && FUTURE.test(address[1])) address = null;
-          station = clean(address ? address[1] : suffix, catalogAlias);
-          if (station) return { station: station, ruleId: rule.id, kind: rule.kind, origin: rule.origin, pickupAddress: !!address };
+            ? followingPickupAddress(fragment.tail.slice(fragment.value.length), catalogAlias) : '';
+          if (address || station) return { station: address || station, ruleId: rule.id, kind: rule.kind, origin: rule.origin, pickupAddress: !!address };
           at = current.indexOf(rule.starts[j], at + rule.starts[j].length);
         }
       }
@@ -122,6 +137,11 @@ var PickCodeLogistics = (function () {
   function pickupStation(description, rules) {
     var match = stationMatch(description, rules);
     return match ? match.station : '';
+  }
+  function pickupAddress(description, rules) {
+    if (!/(?:取件|取货|自提)地址/.test(description)) return '';
+    var match = stationMatch(description, rules);
+    return match && match.pickupAddress ? match.station : '';
   }
   function pickupArrivalEvent(description, stationHint, rules) {
     var value = text(description), parts, i, match;
@@ -346,8 +366,8 @@ var PickCodeLogistics = (function () {
     output.forEach(function (rule) { if (Object.prototype.hasOwnProperty.call(ids, rule.id)) throw new Error('规则编号不能重复'); ids[rule.id] = true; });
     return output;
   }
-  return { defaults: defaults, validateRule: validateRule, validateRules: validateRules, pickupStation: pickupStation, pickupArrivalEvent: pickupArrivalEvent,
-    pickupEvidence: pickupEvidence, doorstepEvidence: doorstepEvidence, eventTimeIssue: eventTimeIssue, catalogStation: catalogStation, catalogPickupEvidence: catalogPickupEvidence, eventStatus: eventStatus, homeDeliveryCompleted: homeDeliveryCompleted, genericPickupStation: genericPickupStation,
+  return { defaults: defaults, validateRule: validateRule, validateRules: validateRules, pickupStation: pickupStation, pickupAddress: pickupAddress, pickupArrivalEvent: pickupArrivalEvent,
+    pickupEvidence: pickupEvidence, doorstepEvidence: doorstepEvidence, eventTimeIssue: eventTimeIssue, catalogStation: catalogStation, catalogPickupEvidence: catalogPickupEvidence, eventStatus: eventStatus, homeDeliveryCompleted: homeDeliveryCompleted, genericPickupStation: genericPickupStation, pickupAddressPlaceholder: pickupAddressPlaceholder,
     pickupCycleReset: pickupCycleReset, test: function (rule, sample) {
       var draft = {}, key;
       if (rule && typeof rule === 'object' && !Array.isArray(rule)) {
