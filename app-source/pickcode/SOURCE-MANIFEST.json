@@ -674,8 +674,8 @@
     },
     {
       "path": "pages/packages/index.vue",
-      "size": 79841,
-      "sha256": "e5939bd36bb6bb51d78bacc290c75416c291a137b740f6333476c2c9f3c4a171"
+      "size": 80041,
+      "sha256": "2fde3f3cf1e2bdbd236b27a9ca0dd214fa91e664a11e5bc84333a90733b3de9e"
     },
     {
       "path": "scripts/ai-context.mjs",

@@ -98,7 +98,7 @@
           </OrderOverview>
           <view v-if="selectedOrder.sharedShipmentOrderIds?.length" class="order-tools">
             <text class="muted-inline">{{ selectedOrder.sharedShipmentPicked ? '共用包裹已取件' : '与其他订单共用同一包裹' }}</text>
-            <button v-for="order in sharedShipmentOrders" :key="order.id" role="button" tabindex="0" @click="openDetails(order)">查看共用包裹</button>
+            <button v-for="entry in sharedShipments" :key="entry.shipmentId" role="button" tabindex="0" @click="openDetails(entry.order, entry.shipmentId)">查看共用包裹</button>
           </view>
           <text v-if="refreshProgressText || error || notice" class="muted-inline" role="status">{{ refreshProgressText || error || notice }}</text>
           <view v-if="detailMore" class="detail-more" ref="detailMorePanel">
@@ -175,7 +175,11 @@ export default {
     filteredGroups() { return this.dateGroups(this.platformPackages.filter(p => this.showExpired || this.hiddenRecoveryMode || packageProgressMatches(p, this.selectedProgress) || this.journeyCompletion(p)), this.selectedProgress === 'done' && !this.showExpired, true); },
     journeysByOrder() { const result = Object.create(null); for (const order of this.packages) result[order.id] = (order.shipments?.length ? order.shipments.filter(s => !s.hidden) : [{}]).map(s => ({ id: s.id || order.id, journey: parcelJourney(s, order) })); return result; },
     detailShipment() { return this.selectedOrder?.shipments?.find(s => s.id === this.detailShipmentId) || this.summaryShipment(this.selectedOrder || {}) || {}; },
-    sharedShipmentOrders() { return this.packages.filter(order => this.selectedOrder?.sharedShipmentOrderIds?.includes(order.id)); },
+    sharedShipments() {
+      const ids = new Set(this.selectedOrder?.sharedShipmentIds || []);
+      return this.packages.flatMap(order => (order.shipments || [])
+        .filter(shipment => ids.has(shipment.id)).map(shipment => ({ order, shipmentId: shipment.id })));
+    },
     detailPickup() { return this.codes.find(code => (code.members || []).some(member => member.shipmentId === this.detailShipment.id)) || null; },
     detailSources() { return this.detailPickup?.sources || []; },
     selectedOrder() { return [...this.tableData, ...this.archivedData].flatMap(g => g.list).find(p => p.id === this.detailId && (this.selectedFamily === 'all' || (p.familyId || '') === this.selectedFamily)) || null; },
@@ -356,7 +360,7 @@ export default {
     async retrySync() { if (this.refreshing || this.backgroundSyncing) return; this.refreshing = true; try { if (!this.hydrated) this.applySnapshot(await getSnapshot()); if (!this.online.bound) { await this.loadData(); return; } const result = await refreshOnline(progress => { this.refreshProgressText = progress.label; }); this.applySnapshot(result.snapshot); this.error = result.onlineError || ''; this.notice = [result.onlineNotice, result.pending ? result.pendingNotice || '后台仍在处理中，稍后刷新查看' : ''].filter(Boolean).join('；'); } catch (e) { this.error = e.message || '更新失败，已有记录已保留'; } finally { this.refreshing = false; this.refreshProgressText = ''; } },
     openFilters() { this.filterDraft = { family: this.selectedFamily, history: this.showHistory, hidden: this.showHidden }; this.openPopup('filterPopup'); },
     applyFilters() { this.animateList(() => { this.selectedFamily = this.filterDraft.family; this.showHistory = this.filterDraft.history; this.showExpired = false; this.showHidden = this.filterDraft.hidden; this.regroup(); }); this.closePopup('filterPopup'); },
-    openDetails(item) { this.detailId = item.id; this.detailShipmentId = this.summaryShipment(item)?.id || ''; this.detailMore = false; this.dateEditing = false; this.openPopup('detailPopup'); },
+    openDetails(item, shipmentId) { this.detailId = item.id; this.detailShipmentId = shipmentId || this.summaryShipment(item)?.id || ''; this.detailMore = false; this.dateEditing = false; this.openPopup('detailPopup'); },
     openPopup(name) { this._popupTrigger = typeof document !== 'undefined' ? document.activeElement : null; this.activePopup = name; this.$refs[name].open(); },
     closePopup(name) { this.$refs[name]?.close(); },
     popupChanged(name, event) {
