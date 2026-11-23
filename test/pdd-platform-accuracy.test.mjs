@@ -7,8 +7,8 @@ import { detectPickupCompletion } from '../src/pickup-completion.mjs';
 import { Store } from '../src/store.mjs';
 import { shipmentDetails } from '../src/client-snapshot.mjs';
 
-await import(new URL(existsSync(new URL('../app-source/pickcode/core/load-core.mjs', import.meta.url))
-  ? '../app-source/pickcode/core/load-core.mjs' : '../app-source/pickcode/core/load-core.mjs', import.meta.url));
+await import(new URL(existsSync(new URL('../../core/load-core.mjs', import.meta.url))
+  ? '../../core/load-core.mjs' : '../app-source/pickcode/core/load-core.mjs', import.meta.url));
 
 const NOW = Date.parse('2026-11-09T12:00:00+08:00');
 const ORDER = 'SYNTHETIC-PDD-ACCURACY', WAYBILL = 'SYNTHETIC-PDD-A';
@@ -210,6 +210,34 @@ test('PDD targeted refresh obtains the current cabinet code instead of waiting f
     const result = await collect({ platform: 'pdd' }, 'pdd_user_id=SYNTHETIC', { targetOrder });
     assert.equal(calls.filter(path => path.includes('/cabinet/')).length, 1);
     assert.equal(result.shipments[0].pickupCode, cabinetWaybill === WAYBILL ? '9-8-7654' : '');
+  }
+});
+
+test('PDD targeted cabinet refresh checks order and waybill identity on the response envelope', async () => {
+  const sibling = 'SYNTHETIC-PDD-B';
+  const splitOrder = { ...targetOrder, shipments: [...targetOrder.shipments, { waybillNo: sibling, status: 'transit' }] };
+  const valid = { code: '9-8-7654', address: '合成当前驿站', arrival_time: NOW / 1000 - 120 };
+  const current = { order_sn: ORDER, tracking_number: WAYBILL };
+  for (const [outer, inner, expected] of [
+    [current, {}, valid.code],
+    [current, current, valid.code],
+    [{ order_sn: ORDER }, {}, ''],
+    [{ ...current, orderSn: 'SYNTHETIC-OTHER-ORDER' }, current, ''],
+    [{ ...current, trackingNumber: sibling }, current, ''],
+    [current, { tracking_number: sibling }, ''],
+    [current, { orderSn: 'SYNTHETIC-OTHER-ORDER' }, ''],
+  ]) {
+    const collect = createCollector({ now: () => NOW, fetchImpl: async url => new URL(url).pathname.includes('/cabinet/')
+      ? reply({ ...outer, result: { ...valid, ...inner } }) : reply({ shipping: { ...current, traces: [
+        { timestamp: NOW / 1000 - 120, info: '包裹已到达合成当前驿站，等待领取' },
+      ] } }) });
+    const result = await collect({ platform: 'pdd' }, 'pdd_user_id=SYNTHETIC', { targetOrder: splitOrder });
+    const main = result.shipments.find(parcel => parcel.waybillNo === WAYBILL);
+    const other = result.shipments.find(parcel => parcel.waybillNo === sibling);
+    assert.equal(main?.logisticsState, 'ok');
+    assert.equal(main.pickupCode || '', expected, JSON.stringify({ outer, inner }));
+    assert.ok(other, 'the sibling parcel remains in the result');
+    assert.equal(other.pickupCode || '', '');
   }
 });
 

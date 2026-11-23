@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Store } from '../src/store.mjs';
+import { clientSnapshot } from '../src/client-snapshot.mjs';
 import { normalizeLogisticsEvents, orderTimePrecision, pddShippingEvents, taobaoDetailDateEvidence, taobaoStageEvents, taobaoTransitEvents } from '../src/collector-enrichment.mjs';
 import { jdParcels } from '../src/collectors.mjs';
 import { shippingEvent, shippingEvidence } from '../src/shipment-lifecycle.mjs';
@@ -12,13 +13,13 @@ const NOW = Date.parse('2026-11-09T12:00:00+08:00');
 const KEY = Buffer.alloc(32, 4);
 const timestamp = value => Number.isFinite(Number(value)) ? Number(value) : Date.parse(value);
 const event = (offset, description, timePrecision = 'second') => ({ time: NOW + offset, description, timePrecision });
-function fixture(t, rules) {
+function fixture(t, rules, platform = 'taobao') {
   const directory = mkdtempSync(join(tmpdir(), 'shipment-lifecycle-'));
   const filename = join(directory, 'cache.sqlite');
   let clock = NOW;
   let store = new Store({ filename, key: KEY, now: () => clock, ...(rules ? { getLogisticsRules: () => rules } : {}) });
   t.after(() => { store.close(); rmSync(directory, { recursive: true, force: true }); });
-  store.saveAccount({ platform: 'taobao', label: 'fixture', cookie: 'FIXTURE' }, 'a', true);
+  store.saveAccount({ platform, label: 'fixture', cookie: 'FIXTURE' }, 'a', true);
   const read = () => store.snapshot(['a']).shipments.find(s => s.waybillNo === 'TEST');
   return {
     get store() { return store; }, read,
@@ -150,6 +151,39 @@ test('new delivery cycles archive prior milestones and do not reuse dispatch or 
   shipment = f.sync([event(1500, '已揽收')]);
   assert.equal(shipment.shippedAt, NOW + 1500);
   assert.equal(f.op('pick', NOW + 2000, { pickedAt: NOW - 7000 }).pickupConfirmedAt, 0);
+});
+
+test('PDD redelivery clears the previous pickup code and publishes a late current code', t => {
+  const f = fixture(t, undefined, 'pdd');
+  const initial = f.sync([event(-8000, '已到达合成东门菜鸟驿站')], { status: 'arrived', pickupCode: '2-3456' });
+  const first = clientSnapshot(f.store.snapshot(['a']));
+  assert.equal(first.shipments[0].pickupCode, '2-3456');
+
+  f.setTime(NOW + 3000);
+  const newTrack = [event(2000, '已到达合成西门菜鸟驿站'), event(1000, '包裹已改投，重新派送中')];
+  const next = f.sync(newTrack, { status: 'arrived', pickupCode: '' });
+  assert.equal(next.arrivalAt, NOW + 2000);
+  assert.notEqual(next.pickupCycle.id, initial.pickupCycle.id);
+  assert.equal(f.store.shipment(next.id).pickupCode, '');
+  const redelivered = clientSnapshot(f.store.snapshot(['a']), first.dataVersion);
+  assert.equal(redelivered.metadataOnly, false);
+  assert.equal(redelivered.shipments[0].pickupCode, '');
+
+  f.setTime(NOW + 4000);
+  const withCode = f.sync(newTrack, { status: 'arrived', pickupCode: '3-4567' });
+  assert.equal(withCode.pickupCycle.id, next.pickupCycle.id);
+  const refreshed = clientSnapshot(f.store.snapshot(['a']), redelivered.dataVersion);
+  assert.equal(refreshed.metadataOnly, false);
+  assert.equal(refreshed.shipments[0].pickupCode, '3-4567');
+
+  f.setTime(NOW + 5000);
+  assert.equal(f.sync(newTrack, { status: 'arrived', pickupCode: '' }).pickupCode, '3-4567');
+
+  f.setTime(NOW + 7000);
+  const withFreshCode = f.sync([event(6000, '已到达合成南门菜鸟驿站'), event(5500, '包裹已改投，重新派送中')],
+    { status: 'arrived', pickupCode: '4-5678' });
+  assert.notEqual(withFreshCode.pickupCycle.id, next.pickupCycle.id);
+  assert.equal(withFreshCode.pickupCode, '4-5678');
 });
 
 test('undated returns invalidate elapsed-time evidence and stale payloads cannot replace dispatch', t => {

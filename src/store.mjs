@@ -863,13 +863,16 @@ export class Store {
         const cycleState = staleLogistics ? pickupCycleData(id, input, old || {}, old?.logisticsEvents || [], this.now())
           : pickupCycleData(id, input, old || {}, logistics.logisticsEvents, this.now());
         const { cycleChanged, ...cycle } = cycleState;
+        const resetPickupCode = (account.platform === 'pdd' && cycleChanged)
+          || (!pickup.arrivalAt && (old?.arrivalAt
+            || logistics.logisticsEvents.some(event => pickupCycleReset(event.description) && (!event.time || event.time <= this.now()))));
         const shipping = shippingEvidence(logistics.logisticsEvents, cycleChanged ? {} : old || {}, this.now(), cycle.pickupCycle, account.platform);
         const projectedStatus = account.platform !== 'jd' || ['arrived', 'signed'].includes(status) ? status
           : status === 'unknown' && ['arrived', 'signed'].includes(old?.status) ? old.status
             : jdShipmentStatus(logistics.logisticsEvents, old?.status || status, rules, this.now());
         let shipment = { id, orderId, accountId, familyId: old ? old.familyId || '' : order.familyId || '',
           familyName: old ? old.familyName || '' : order.familyName || '', waybillNo: old?.waybillNo || String(input.waybillNo), carrier: carrier ? input.carrier : old?.carrier || input.carrier || '', status: staleLogistics ? old.status : projectedStatus,
-          pickupCode: staleLogistics ? old.pickupCode || '' : input.pickupCode || (!pickup.arrivalAt && (old?.arrivalAt || logistics.logisticsEvents.some(event => pickupCycleReset(event.description) && (!event.time || event.time <= this.now()))) ? '' : old?.pickupCode) || '', ...pickup,
+          pickupCode: staleLogistics ? old.pickupCode || '' : input.pickupCode || (resetPickupCode ? '' : old?.pickupCode) || '', ...pickup,
           updatedAt: input.updatedAt || this.now(), picked: cycleChanged ? false : old?.picked || false, hidden: old?.hidden || false,
           deleted: old?.deleted || false, manualAt: old?.manualAt || 0,
           pickupCompletion: cycleChanged ? pickupCompletionState({}) : pickupCompletionState(old), pickupManualAt: cycleChanged ? 0 : old?.pickupManualAt || 0,

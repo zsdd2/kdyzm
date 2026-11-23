@@ -16,12 +16,12 @@ const known = { platformOrderId: 'order', orderStatus: '待收货', shipments: [
   logisticsState: 'ok', logisticsEvents: [{ time: NOW - 120000, description: '旧包裹运输中' }] }] };
 
 function fixture({ shipping = { order_sn: 'order', tracking_number: 'NEW', shipping_name: '中通快递', traces: [trace] },
-  listed = [{ order_sn: 'order', order_status_text: '待收货', tracking_number: 'OLD' }], split = [] } = {}) {
+  listed = [{ order_sn: 'order', order_status_text: '待收货', tracking_number: 'OLD' }], split = [], cabinet = {} } = {}) {
   const calls = [];
   const collector = createCollector({ now: () => NOW, maxPages: 1, fetchImpl: async url => {
     const target = new URL(url); calls.push(target);
     if (target.pathname.includes('order_list_v4')) return reply({ orders: target.searchParams.get('type') === 'unreceived' ? listed : [], has_more: false });
-    if (target.pathname.includes('/cabinet/')) return reply({ result: {} });
+    if (target.pathname.includes('/cabinet/')) return reply({ result: cabinet });
     if (target.pathname.endsWith('/order/order/shipping')) return reply({ shipping });
     if (target.pathname.endsWith('/split/pack')) return reply({ result: { list: split } });
     if (target.pathname.endsWith('/shipping/track')) return reply({ shipping: { order_sn: 'order',
@@ -31,7 +31,41 @@ function fixture({ shipping = { order_sn: 'order', tracking_number: 'NEW', shipp
   return { calls, collect: options => collector(account, cookie, options) };
 }
 
+test('PDD full refresh retrieves the arrived parcel cabinet code when the active order is missing from both lists', async () => {
+  const arrival = { ...trace, info: '包裹已存放至合成驿站，等待领取', status: 'IN_CABINET' };
+  const f = fixture({ listed: [], shipping: { order_sn: 'order', tracking_number: 'OLD', traces: [arrival] },
+    cabinet: { tracking_number: 'OLD', code: '1-2-3456', arrival_time: arrival.timestamp } });
+  const result = await f.collect({ knownOrders: [known] });
+  const parcel = result.shipments[0];
+  assert.equal(parcel?.status, 'arrived');
+  assert.equal(parcel.logisticsState, 'ok');
+  assert.equal(parcel.pickupCode, '1-2-3456');
+  assert.equal(f.calls.filter(url => url.pathname.includes('/cabinet/')).length, 1);
+});
+
 for (const targeted of [false, true]) {
+  test(`PDD ${targeted ? 'targeted' : 'full'} refresh retrieves the cabinet code for an arrived waybill first seen in shipping`, async t => {
+    const arrival = { ...trace, info: '包裹已存放至合成驿站，等待领取', status: 'IN_CABINET' };
+    const order = { platformOrderId: 'order', orderStatus: '待收货', orderDate: NOW - 86400000, shipments: [] };
+    const f = fixture({ listed: [{ order_sn: 'order', order_status_text: '待收货' }],
+      shipping: { order_sn: 'order', tracking_number: 'NEW', shipping_name: '中通快递', traces: [arrival] },
+      cabinet: { tracking_number: 'NEW', code: '2-3-4567', arrival_time: arrival.timestamp } });
+    const store = new Store({ key: Buffer.alloc(32, 4), now: () => NOW });
+    t.after(() => store.close());
+    const savedAccount = store.saveAccount({ ...account, label: '合成', cookie }, 'fixture', true);
+    store.importResult(savedAccount.id, { orders: [order], shipments: [] });
+
+    const result = await f.collect(targeted ? { targetOrder: order } : { knownOrders: [order] });
+    store.importResult(savedAccount.id, result);
+    const parcel = store.snapshot([savedAccount.id], undefined, 0, false).shipments[0];
+
+    assert.equal(parcel?.waybillNo, 'NEW');
+    assert.equal(parcel.status, 'arrived');
+    assert.equal(parcel.pickupCode, '2-3-4567');
+    const requested = f.calls.filter(url => url.pathname.endsWith('/shipping') || url.pathname.includes('/cabinet/'));
+    assert.deepEqual(requested.map(url => url.pathname.endsWith('/shipping') ? 'shipping' : 'cabinet'), ['shipping', 'cabinet']);
+  });
+
   test(`PDD ${targeted ? 'targeted' : 'full'} refresh admits an independently verified new waybill and deduplicates split discovery`, async () => {
     const jump = waybill => `https://mobile.yangkeduo.com/goods_express.html?order_sn=order&tracking_number=${waybill}&shipping_id=4`;
     const f = fixture({ shipping: { order_sn: 'order', tracking_number: 'NEW', traces: [trace], package_info_jump_url: jump('NEW') },

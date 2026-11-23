@@ -17,24 +17,29 @@ const options = (data, calls = []) => ({ expectedOrderId: ORDER, pddCheck: value
   platformRequest: async url => { calls.push(new URL(url)); return response(data); },
 });
 
-function collectorFixture(mode, checkpoints = []) {
+function collectorFixture(mode, checkpoints = [], { mainWaybill = false } = {}) {
   const now = Date.parse('2026-11-10T10:00:00+08:00'), requests = [];
+  const externalWaybill = mainWaybill ? 'SYNTHETIC-A' : 'SYNTHETIC-B';
+  const otherWaybill = mainWaybill ? 'SYNTHETIC-B' : 'SYNTHETIC-A';
+  const cabinet = { code: '7-8-9012', address: '合成分包驿站', arrival_time: now / 1000 - 120 };
+  const mainTrack = { timestamp: now / 1000 - 180, info: mainWaybill ? '包裹已到达合成分包驿站，等待领取' : '运输中' };
   const collect = createCollector({ now: () => now, fetchImpl: async url => {
     const u = new URL(url); requests.push(u);
     const reply = value => new Response(JSON.stringify(value));
     if (u.pathname.includes('/cabinet/')) {
-      if (!u.searchParams.has('external')) return reply({ result: {} });
-      assert.equal(u.searchParams.get('tracking_number'), 'SYNTHETIC-B');
+      if (!u.searchParams.has('external')) return reply({ result: mainWaybill ? { ...cabinet, code: '1-2-9876' } : {} });
+      assert.equal(u.searchParams.get('tracking_number'), externalWaybill);
       if (mode === 'failed') return new Response('Synthetic failure', { status: 503 });
-      return reply({ result: { tracking_number: mode === 'mismatch' ? 'SYNTHETIC-A' : 'SYNTHETIC-B', code: '7-8-9012', address: '合成分包驿站', arrival_time: now / 1000 - 120 } });
+      return reply({ result: { ...cabinet, tracking_number: mode === 'mismatch' ? otherWaybill : externalWaybill } });
     }
-    if (u.pathname.endsWith('/shipping')) return reply({ shipping: { ...source, traces: [{ timestamp: now / 1000 - 180, info: '运输中' }] } });
-    if (u.pathname.endsWith('/split/pack')) return reply({ result: { list: [item('SYNTHETIC-B', '1')] } });
+    if (u.pathname.endsWith('/shipping')) return reply({ shipping: { ...source, traces: [mainTrack] } });
+    if (u.pathname.endsWith('/split/pack')) return reply({ result: { list: [item(externalWaybill, '1')] } });
     assert.ok(u.pathname.endsWith('/shipping/track'));
     return reply({ shipping: { tracking_number: 'SYNTHETIC-B', traces: [{ timestamp: now / 1000 - 120, info: '包裹已到达合成分包驿站，等待领取' }] } });
   } });
   return { requests, run: durableLogistics => collect({ platform: 'pdd' }, 'pdd_user_id=SYNTHETIC', {
-    targetOrder: { platformOrderId: ORDER, shipments: [{ waybillNo: 'SYNTHETIC-A', status: 'transit' }] },
+    targetOrder: { platformOrderId: ORDER, shipments: [{ waybillNo: 'SYNTHETIC-A', status: 'transit' },
+      ...(mainWaybill ? [{ waybillNo: 'SYNTHETIC-B', status: 'transit', waybillVerification: 'unverified' }] : [])] },
     durableLogistics, onProgress: delta => checkpoints.push(structuredClone(delta)),
   }) };
 }
@@ -56,6 +61,30 @@ test('a durable split cabinet retry checkpoints the already verified split track
   const checkpoints = [], f = collectorFixture('failed', checkpoints);
   await assert.rejects(f.run(true), { code: 'UPSTREAM_ERROR' });
   assert.ok(checkpoints.flatMap(delta => delta.shipments || []).some(p => p.waybillNo === 'SYNTHETIC-B' && p.logisticsState === 'ok'));
+});
+
+test('the main waybill reads its documented external cabinet without assigning an order-level code to an unverified sibling', async () => {
+  for (const mode of ['ok', 'mismatch']) {
+    const fixture = collectorFixture(mode, [], { mainWaybill: true });
+    const result = await fixture.run(false);
+    const main = result.shipments.find(parcel => parcel.waybillNo === 'SYNTHETIC-A');
+    const sibling = result.shipments.find(parcel => parcel.waybillNo === 'SYNTHETIC-B');
+    assert.equal(main.pickupCode || '', mode === 'ok' ? '7-8-9012' : '');
+    assert.equal(sibling.pickupCode || '', '');
+    assert.equal(main.logisticsState, 'ok');
+    assert.equal(main.logisticsEvents.length, 1);
+    assert.deepEqual(fixture.requests.filter(url => url.searchParams.get('external') === '1').map(url => url.searchParams.get('tracking_number')), ['SYNTHETIC-A']);
+    assert.equal(fixture.requests.some(url => url.pathname.endsWith('/shipping/track')), false);
+  }
+});
+
+test('a durable main cabinet retry checkpoints the already verified main track', async () => {
+  const checkpoints = [], fixture = collectorFixture('failed', checkpoints, { mainWaybill: true });
+  await assert.rejects(fixture.run(true), { code: 'UPSTREAM_ERROR' });
+  const main = checkpoints.flatMap(delta => delta.shipments || []).find(parcel => parcel.waybillNo === 'SYNTHETIC-A' && parcel.logisticsState === 'ok');
+  assert.ok(main);
+  assert.equal(main.logisticsEvents.length, 1);
+  assert.equal(main.pickupCode || '', '');
 });
 async function externalParcel() {
   const result = await split.discoverPddSplit(source, options({ result: { list: [item('SYNTHETIC-A', '1')] } }));

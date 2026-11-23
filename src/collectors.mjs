@@ -585,17 +585,65 @@ async function collectPdd(cookie, { fetchImpl, maxPages, now, knownOrders = [], 
   let skippedCount = 0;
   const splitOptions = platformOrderId => ({ expectedOrderId: platformOrderId, pddCheck,
     platformRequest: url => platformRequest(url, cookie, { fetchImpl, headers }) });
+  const applyShippingEvidence = parcel => {
+    const usable = (parcel.logisticsEvents || []).filter(event => logisticsEventTimeIssue(event, parcel.logisticsCheckedAt) !== 'timeConflict');
+    if (usable.length) {
+      parcel.status = eventStatus(usable[0].description, parcel.status, rules);
+      applyTrackEvidence(parcel, usable, rules);
+    }
+  };
   const applyShipping = (parcel, shipping, checkedAt) => {
     const { events, truncated } = pddShippingEvents(shipping, timestamp, rules, checkedAt);
     Object.assign(parcel, { logisticsEvents: events, logisticsTruncated: truncated,
       logisticsState: events.length ? 'ok' : 'empty', logisticsError: events.length ? '' : '平台本次未返回物流轨迹',
       logisticsCheckedAt: checkedAt, logisticsUpdatedAt: checkedAt });
-    const usable = events.filter(event => logisticsEventTimeIssue(event, checkedAt) !== 'timeConflict');
-    if (usable.length) { parcel.status = eventStatus(usable[0].description, parcel.status, rules); applyTrackEvidence(parcel, usable, rules); }
+    applyShippingEvidence(parcel);
   };
-  async function collectLogistics({ platformOrderId, parcels: inputParcels, missingFromList }) {
+  const applyCabinet = (parcel, cabinet) => {
+    const statusText = parcel.status === 'signed' ? '已签收' : parcel.status === 'arrived' ? '待取件' : '';
+    if (!cabinet?.code && !cabinet?.arrival_time && !(parcel.status === 'arrived' && cabinet?.create_time)) return;
+    const { status, ...evidence } = pddParcels({ order_sn: parcel.platformOrderId, tracking_number: parcel.waybillNo,
+      shipping_name: parcel.carrier, shipping_status_text: statusText }, cabinet, rules)[0];
+    Object.assign(parcel, evidence);
+    if (status === 'arrived') parcel.status = status;
+    applyShippingEvidence(parcel);
+  };
+  async function fetchOrderCabinet(platformOrderId, warnings) {
+    try {
+      const url = 'https://mobile.yangkeduo.com/proxy/api/api/express/cabinet/' + encodeURIComponent(platformOrderId);
+      const response = await platformRequest(url, cookie, { fetchImpl, headers });
+      const envelope = pddCheck(json(response.text));
+      const cabinet = envelope.result;
+      return cabinet && typeof cabinet === 'object' && !Array.isArray(cabinet)
+        && pddOrderMatches(envelope, platformOrderId) && pddOrderMatches(cabinet, platformOrderId) ? { envelope, cabinet } : null;
+    } catch (error) {
+      if (mustStopLogistics(error, durableLogistics)) throw error;
+      warnings.push('部分驿站取件码暂不可用，无码运单继续保留');
+      return null;
+    }
+  }
+  const checkpointTrack = parcel => onProgress?.({ orders: [], orderUpdates: [], shipments: [parcel], logisticsFailures: [], warnings: [] });
+  async function enrichSplitCabinet(parcel, selector, warnings) {
+    try {
+      const { cabinet } = await fetchPddSplitCabinet(selector, splitOptions(parcel.platformOrderId));
+      if (cabinet) applyCabinet(parcel, cabinet);
+      else warnings.push('部分分包柜码信息未通过运单核对，已保留物流轨迹');
+    } catch (error) {
+      if (mustStopLogistics(error, durableLogistics)) {
+        await checkpointTrack(parcel);
+        throw error;
+      }
+      warnings.push('部分分包取件码查询失败，已保留物流轨迹');
+    }
+  }
+  async function collectLogistics({ platformOrderId, parcels: inputParcels, missingFromList }, assertCurrent = () => {}) {
     const parcels = structuredClone(inputParcels), logisticsFailures = [], warnings = [], splitParcels = [];
+    const requestedCabinet = !missingFromList && parcels.length > 0;
+    let orderCabinet = requestedCabinet ? await fetchOrderCabinet(platformOrderId, warnings) : null;
+    assertCurrent();
     const checkedAt = now();
+    let target, mayHaveSibling = false;
+    let discovered = { parcels: [], failures: [] };
     try {
       const query = new URLSearchParams({ query_type: '2', entry_source: '2', ts: String(checkedAt) });
       const response = await platformRequest(`https://mobile.yangkeduo.com/proxy/api/order/${encodeURIComponent(platformOrderId)}/shipping?${query}`, cookie, { fetchImpl, headers });
@@ -605,7 +653,7 @@ async function collectPdd(cookie, { fetchImpl, maxPages, now, knownOrders = [], 
       if (!pddOrderMatches(payload, platformOrderId) || !pddOrderMatches(shipping, platformOrderId) || !pddWaybillMatches(shipping, waybillNo)) {
         throw new CollectorError('UPSTREAM_FORMAT', '拼多多物流订单或运单标识不匹配');
       }
-      let target = waybillNo ? parcels.find(parcel => parcel.waybillNo === waybillNo) : parcels.length === 1 ? parcels[0] : null;
+      target = waybillNo ? parcels.find(parcel => parcel.waybillNo === waybillNo) : parcels.length === 1 ? parcels[0] : null;
       if (!target && validPddWaybill(waybillNo) && activeParcel(known.get(platformOrderId), waybillNo)) {
         const candidate = { platformOrderId, waybillNo, carrier: asText(shipping.shipping_name || shipping.shippingName), status: 'unknown' };
         applyShipping(candidate, shipping, checkedAt);
@@ -617,14 +665,14 @@ async function collectPdd(cookie, { fetchImpl, maxPages, now, knownOrders = [], 
         if (waybillNo === target.waybillNo) target.carrier = asText(shipping.shipping_name || shipping.shippingName) || target.carrier;
         applyShipping(target, shipping, checkedAt);
       }
-      let discovered = { parcels: [], failures: [] };
       try { discovered = await discoverPddSplit(shipping, splitOptions(platformOrderId)); }
       catch (error) {
         if (mustStopLogistics(error, durableLogistics)) {
           // A retryable sibling query must not discard the independently verified main track.
-          if (target) await onProgress?.({ orders: [], orderUpdates: [], shipments: [structuredClone(target)], logisticsFailures: [], warnings: [] });
+          if (target) await checkpointTrack(target);
           throw error;
         }
+        mayHaveSibling = true;
         warnings.push('分包列表查询失败，已保留主运单轨迹');
       }
       splitParcels.push(...discovered.parcels.filter(parcel => parcel.waybillNo !== target?.waybillNo && activeParcel(known.get(platformOrderId), parcel.waybillNo))
@@ -640,6 +688,39 @@ async function collectPdd(cookie, { fetchImpl, maxPages, now, knownOrders = [], 
       if (!parcels.length) logisticsFailures.push({ platformOrderId, state: 'error', logisticsCheckedAt: checkedAt });
       for (const parcel of parcels) logisticsFailures.push({ platformOrderId, waybillNo: parcel.waybillNo, state: 'error', logisticsCheckedAt: checkedAt });
       warnings.push('部分物流轨迹读取失败，已保留上次轨迹');
+    }
+    if (!requestedCabinet && target?.status === 'arrived') {
+      try {
+        assertCurrent();
+        orderCabinet = await fetchOrderCabinet(platformOrderId, warnings);
+      } catch (error) {
+        await checkpointTrack(target);
+        throw error;
+      }
+    }
+    const knownWaybills = new Set([...parcels, ...discovered.parcels, ...(known.get(platformOrderId)?.shipments || [])]
+      .map(parcel => pddWaybill(parcel.waybillNo)).filter(validPddWaybill));
+    const requireWaybill = knownWaybills.size > 1 || discovered.failures.length > 0 || mayHaveSibling;
+    for (const parcel of parcels) {
+      parcel.pickupCode ??= '';
+      if (requestedCabinet) {
+        parcel.arrivalAt ??= 0;
+        parcel.arrivalAtSource ??= 'unknown';
+        parcel.arrivalAtPrecision ??= 'unknown';
+        parcel.station ??= '';
+        parcel.stationSource ??= 'unknown';
+      }
+      if (!orderCabinet) continue;
+      const { envelope, cabinet } = orderCabinet;
+      if (!pddWaybillMatches(envelope, parcel.waybillNo) || !pddWaybillMatches(cabinet, parcel.waybillNo)) continue;
+      const identified = [envelope, cabinet].some(value => pddWaybill(value.tracking_number ?? value.trackingNumber) === parcel.waybillNo);
+      if (identified || !requireWaybill) applyCabinet(parcel, cabinet);
+    }
+    const mainSelector = discovered.parcels.find(parcel => parcel.waybillNo === target?.waybillNo && parcel.external === '1');
+    if (mainSelector && target.status === 'arrived' && !target.pickupCode) {
+      try { assertCurrent(); }
+      catch (error) { await checkpointTrack(target); throw error; }
+      await enrichSplitCabinet(target, mainSelector, warnings);
     }
     return { shipments: missingFromList ? parcels.filter(parcel => parcel.logisticsState) : parcels, logisticsFailures, warnings, splitParcels };
   }
@@ -657,23 +738,10 @@ async function collectPdd(cookie, { fetchImpl, maxPages, now, knownOrders = [], 
         const detail = await fetchPddSplitTrack(candidate, { ...splitOptions(platformOrderId), queryType: 2 });
         if (detail.failure) result.logisticsFailures.push({ platformOrderId, ...detail.failure, logisticsCheckedAt: checkedAt });
         else {
-          const parcel = { platformOrderId, waybillNo: candidate.waybillNo, carrier: candidate.carrier, status: 'unknown' };
-          if (candidate.external === '1') {
-            try {
-              const resultCabinet = await fetchPddSplitCabinet(candidate, splitOptions(platformOrderId));
-              if (resultCabinet.cabinet) Object.assign(parcel, pddParcels({ order_sn: platformOrderId, tracking_number: candidate.waybillNo,
-                shipping_name: candidate.carrier }, resultCabinet.cabinet, rules)[0]);
-              else result.warnings.push('部分分包柜码信息未通过运单核对，已保留物流轨迹');
-            } catch (error) {
-              if (mustStopLogistics(error, durableLogistics)) {
-                applyShipping(parcel, detail.shipping, checkedAt);
-                await onProgress?.({ orders: [], orderUpdates: [], shipments: [parcel], logisticsFailures: [], warnings: [] });
-                throw error;
-              }
-              result.warnings.push('部分分包取件码查询失败，已保留物流轨迹');
-            }
-          }
-          applyShipping(parcel, detail.shipping, checkedAt); result.shipments.push(parcel);
+          const parcel = { platformOrderId, waybillNo: candidate.waybillNo, carrier: candidate.carrier, status: 'unknown', pickupCode: '' };
+          applyShipping(parcel, detail.shipping, checkedAt);
+          if (candidate.external === '1') await enrichSplitCabinet(parcel, candidate, result.warnings);
+          result.shipments.push(parcel);
         }
       } catch (error) {
         if (mustStopLogistics(error, durableLogistics)) throw error;
@@ -692,11 +760,8 @@ async function collectPdd(cookie, { fetchImpl, maxPages, now, knownOrders = [], 
     const metadata = { platformOrderId, dateCheckedAt: now(), dateState: 'unavailable',
       dateError: hasDate ? '拼多多暂不支持单单日期详情查询，已保留平台列表日期' : '拼多多暂未提供可验证的单单日期查询，日期仍待确认' };
     await onProgress?.({ orders: [], orderUpdates: [metadata], shipments: [], logisticsFailures: [], warnings: [] });
-    const results = await runLogistics([{ platformOrderId, parcels }], async candidate => {
-      const cabinet = await enrichCabinet({ ...candidate, orderStatus: targetOrder.orderStatus });
-      const result = await collectLogistics({ ...candidate, parcels: cabinet.shipments });
-      result.warnings.push(...cabinet.warnings); return result;
-    }, { stage: 'pdd-logistics', concurrency: 2, key: item => item.platformOrderId, onResult: applyResult });
+    const results = await runLogistics([{ platformOrderId, parcels }], candidate => collectLogistics(candidate),
+      { stage: 'pdd-logistics', concurrency: 2, key: item => item.platformOrderId, onResult: applyResult });
     const splits = await collectSplits(results);
     const combined = new Map([...(results[0]?.shipments || parcels), ...splits].map(parcel => [parcel.waybillNo, parcel]));
     return { orders: [], orderUpdates: [metadata], shipments: [...combined.values()], logisticsFailures, warnings };
@@ -760,27 +825,6 @@ async function collectPdd(cookie, { fetchImpl, maxPages, now, knownOrders = [], 
     listed.push({ platformOrderId, kind, orderStatus, parcels });
   }
   await onProgress?.({ orders, shipments: [], orderUpdates, logisticsFailures: [], warnings: [...new Set(warnings)] });
-  async function enrichCabinet({ platformOrderId, orderStatus, parcels: inputParcels }) {
-    const parcels = structuredClone(inputParcels), warnings = [];
-    if (parcels.length) {
-      try {
-        const response = await platformRequest(`https://mobile.yangkeduo.com/proxy/api/api/express/cabinet/${encodeURIComponent(platformOrderId)}`, cookie, { fetchImpl, headers });
-        const cabinet = pddCheck(json(response.text)).result || {};
-        const enriched = pddParcels({ order_sn: platformOrderId, order_status_text: orderStatus,
-          shipping_list: parcels.map(parcel => ({ tracking_number: parcel.waybillNo, shipping_name: parcel.carrier,
-            shipping_status_text: parcel.status === 'signed' ? '已签收' : parcel.status === 'arrived' ? '待取件' : '' })) }, cabinet, rules);
-        for (let i = 0; i < parcels.length; i++) Object.assign(parcels[i], enriched[i]);
-      } catch (error) {
-        if (mustStopLogistics(error, durableLogistics)) throw error;
-        warnings.push('部分驿站取件码暂不可用，无码运单继续保留');
-      }
-    }
-    for (const parcel of activeKnownParcels(knownOrders.find(item => asText(item.platformOrderId) === platformOrderId))) {
-      if (parcels.some(item => item.waybillNo === pddWaybill(parcel.waybillNo))) continue;
-      parcels.push({ platformOrderId, waybillNo: pddWaybill(parcel.waybillNo), carrier: asText(parcel.carrier), status: parcel.status });
-    }
-    return { shipments: parcels, logisticsFailures: [], warnings };
-  }
   const candidates = listed.map(item => ({ ...item, parcels: [...item.parcels] }));
   for (const candidate of candidates) for (const parcel of activeKnownParcels(knownOrders.find(order => asText(order.platformOrderId) === candidate.platformOrderId))) {
     if (!candidate.parcels.some(item => item.waybillNo === pddWaybill(parcel.waybillNo))) candidate.parcels.push({
@@ -803,11 +847,9 @@ async function collectPdd(cookie, { fetchImpl, maxPages, now, knownOrders = [], 
   const results = await runLogistics(selected, async candidate => {
     const generation = interrupted;
     try {
-      const cabinet = candidate.missingFromList ? { shipments: candidate.parcels, warnings: [] } : await enrichCabinet(candidate);
-      if (generation !== interrupted) throw interruption;
-      const result = await collectLogistics({ ...candidate, parcels: cabinet.shipments });
-      result.warnings.push(...cabinet.warnings);
-      return result;
+      return await collectLogistics(candidate, () => {
+        if (generation !== interrupted) throw interruption;
+      });
     } catch (error) { if (mustStopLogistics(error, durableLogistics)) { interrupted++; interruption = error; } throw error; }
   }, {
     stage: 'pdd-logistics', concurrency: 2, key: item => item.platformOrderId, onResult: applyResult,
