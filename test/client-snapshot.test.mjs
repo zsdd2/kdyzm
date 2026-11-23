@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { Store } from '../src/store.mjs';
 import { clientSnapshot, shipmentDetails } from '../src/client-snapshot.mjs';
 import { createService } from '../src/service.mjs';
@@ -91,6 +92,49 @@ function detailFixture(t, events) {
   const shipment = store.snapshot([account.id]).shipments[0];
   return { store, account, device, shipment };
 }
+
+function pddCabinetSnapshot(t, { legacy = false, station = '合成驿站' } = {}) {
+  const { store, account, shipment } = detailFixture(t, [event(NOW - 1000, '待取件')]);
+  const cabinet = { pickupCode: '3号柜246810', status: 'arrived', station, stationSource: 'locker',
+    arrivalAt: NOW - 1000, arrivalAtSource: 'locker_arrival', arrivalAtPrecision: 'second' };
+  if (legacy) {
+    const raw = store.shipment(shipment.id);
+    store.db.prepare('UPDATE shipments SET data=? WHERE id=?').run(JSON.stringify({ ...raw, ...cabinet }), shipment.id);
+  } else {
+    store.importResult(account.id, { orders: [], shipments: [{ platformOrderId: 'order-a',
+      platformPackageKey: 'package-a', waybillNo: 'SYNTHETIC-A', logisticsCheckedAt: NOW, ...cabinet }] });
+  }
+  return clientSnapshot({ ...store.snapshot([account.id], undefined, 0, false), serverLogisticsRulesVersion: 0 });
+}
+
+for (const legacy of [false, true]) test(`PDD ${legacy ? 'stored legacy' : 'new'} cabinet-prefixed code reaches the App as a pickup card`, async t => {
+  const compact = pddCabinetSnapshot(t, { legacy });
+  const shipment = compact.shipments[0];
+  assert.equal(shipment.pickupCode, '246810');
+  assert.match(shipment.station, /3号柜/);
+  assert.match(shipment.platformView.station.rawName, /3号柜/);
+
+  await import(new URL(existsSync(new URL('../../core/load-core.mjs', import.meta.url))
+    ? '../../core/load-core.mjs' : '../app-source/pickcode/core/load-core.mjs', import.meta.url));
+  let state = '';
+  const dispatch = (action, payload) => {
+    const result = JSON.parse(globalThis.PickCodeCore.dispatch(state, JSON.stringify({ action, payload })));
+    state = JSON.stringify(result.state);
+    return result.result;
+  };
+  dispatch('syncMeta', { bound: true, baseUrl: 'https://fixture.example', deviceId: 'fixture', accounts: compact.accounts });
+  const view = dispatch('syncImport', { snapshot: compact, syncedAt: NOW });
+  assert.equal(view.packages[0].shipments[0].displayPickupCode, '246810');
+  assert.ok(view.codes.some(item => item.code === '246810'), 'the App creates a pickup card');
+});
+
+test('PDD cabinet-prefixed code stays unresolved when the explicit station names another cabinet', t => {
+  const { shipments: [shipment] } = pddCabinetSnapshot(t, { legacy: true, station: '合成驿站 5号柜' });
+  assert.notEqual(shipment.pickupCode, '246810');
+  assert.match(shipment.station, /5号柜/);
+  assert.doesNotMatch(shipment.station, /3号柜/);
+  assert.match(shipment.platformView.station.rawName, /5号柜/);
+});
 
 test('shipment details resolve aliases, enforce scope, and use the same evidence key as the snapshot', t => {
   const f = detailFixture(t, [event(NOW - 1000, '已到达合成驿站')]);

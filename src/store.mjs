@@ -14,7 +14,7 @@ import { jdShipmentStatus, retainMilestoneEvents, shippingEvidence, shippingEven
 import { normalizeProductImageUrl } from './product-image.mjs';
 import { prepareUpgradeBackup } from './upgrade-backup.mjs';
 import { ShipmentViewCache, shipmentArrivalEvidence } from './shipment-view.mjs';
-import { normalizeTaobaoPickupCode } from './taobao-pickup-code.mjs';
+import { normalizeCabinetPickupCode } from './taobao-pickup-code.mjs';
 
 export const stableId = (...values) => hash(JSON.stringify(values)).slice(0, 32);
 const parse = row => row && JSON.parse(row.data);
@@ -544,7 +544,7 @@ export class Store {
     const pickup = repairedTime ? pickupData({}, shipment, normalized, rules, now, 'taobao') : {};
     const shipping = shipment.shippedAt === 0 && normalized.some(event => shippingEvent(event.description, 'taobao'))
       ? shippingEvidence(normalized, shipment, now, shipment.pickupCycle, 'taobao') : {};
-    return normalizeTaobaoPickupCode({ ...shipment, ...pickup, ...shipping, logisticsEvents: normalized });
+    return normalizeCabinetPickupCode({ ...shipment, ...pickup, ...shipping, logisticsEvents: normalized });
   }
   shipmentView(shipment, order = this.order(shipment.orderId)) {
     shipment = this.normalizedShipment(shipment, order);
@@ -976,7 +976,23 @@ export class Store {
       const archived = !!orderById.get(s.orderId)?.archived;
       const receipt = retainedSignedShipment(s, archived, this.now());
       const platformView = this.shipmentView(s, orderById.get(s.orderId));
-      return { ...publicShipment, ...(unverifiedWaybills.has(s.id) ? { waybillVerification: 'unverified' } : {}), ...(archived ? { archived: true } : {}), ...(receipt || {}), ...(compactCycle ? { pickupCycle: compactCycle } : {}), ...(pickupCycleHistory?.length ? { pickupCycleHistory } : {}), ...pickup, pickupCompletion: pickupCompletionState(s), pickupCode: s.arrivalAt && !pickup.arrivalAt ? '' : s.pickupCode,
+      let pickupCode = s.arrivalAt && !pickup.arrivalAt ? '' : s.pickupCode;
+      const station = platformView.station;
+      if (platform === 'pdd' && platformView.status === 'arrived' && platformView.arrivalAt && !station.conflict && pickupCode) {
+        // Format the client fields after verifying arrival against the original station and track.
+        const formatted = normalizeCabinetPickupCode({ pickupCode, station: station.rawName });
+        if (formatted.pickupCode !== pickupCode) {
+          const location = normalizeCabinetPickupCode({ pickupCode, station: station.subLocation });
+          if (location.pickupCode === formatted.pickupCode) {
+            pickupCode = formatted.pickupCode;
+            station.rawName = formatted.station;
+            station.subLocation = location.station;
+            if (!station.id) station.displayName = formatted.station;
+            platformView.deliveryMode = 'locker';
+          }
+        }
+      }
+      return { ...publicShipment, ...(unverifiedWaybills.has(s.id) ? { waybillVerification: 'unverified' } : {}), ...(archived ? { archived: true } : {}), ...(receipt || {}), ...(compactCycle ? { pickupCycle: compactCycle } : {}), ...(pickupCycleHistory?.length ? { pickupCycleHistory } : {}), ...pickup, pickupCompletion: pickupCompletionState(s), pickupCode,
         ...(jd || shipping.shippedAt ? shipping : {}), ...manual,
         familyId: s.familyId || '', familyName: s.familyName || '', platformView,
         status: platformView.status, station: platformView.station.rawName, stationSource: platformView.stationSource,

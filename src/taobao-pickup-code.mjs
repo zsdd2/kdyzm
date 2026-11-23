@@ -31,7 +31,7 @@ function structuredCode(value) {
   return validCode(code) ? { cabinet, code } : null;
 }
 
-export function normalizeTaobaoPickupCode(parcel) {
+export function normalizeCabinetPickupCode(parcel) {
   if (!parcel || typeof parcel !== 'object' || Array.isArray(parcel)) return parcel;
   const parsed = structuredCode(parcel.pickupCode);
   if (!parsed) return { ...parcel };
@@ -40,3 +40,5 @@ export function normalizeTaobaoPickupCode(parcel) {
   const station = String(parcel.station ?? '').trim();
   return { ...parcel, pickupCode: parsed.code, station: labels.has(parsed.cabinet) ? station : station ? `${station} ${parsed.cabinet}` : parsed.cabinet };
 }
+
+export const normalizeTaobaoPickupCode = normalizeCabinetPickupCode;
