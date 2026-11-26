@@ -122,3 +122,78 @@ test('diagnostic authentication attempts have an IP limit independent of supplie
   for (let i = 0; i < 120; i++) assert.equal((await f.request('/v1/diagnostics/status', { token: `invalid-${i}` })).status, 401);
   assert.equal((await f.request('/v1/diagnostics/status', { token: 'invalid' })).status, 429);
 });
+
+test('station-feedback diagnostic pages expose only safe fields and never persist legacy attempts on reads', async t => {
+  const f = await setup(t), { token } = await f.create(), { store, stations, matchingFeedback } = f.service;
+  const account = store.saveAccount({ platform: 'pdd', label: 'PRIVATE_ACCOUNT', cookie: 'PRIVATE_COOKIE' }, 'a', true);
+  store.importResult(account.id, {
+    orders: [{ platformOrderId: 'PRIVATE_ORDER_ID', title: 'PRIVATE_ORDER_TITLE' }],
+    shipments: [{ platformOrderId: 'PRIVATE_ORDER_ID', waybillNo: 'PRIVATE_WAYBILL', carrier: '申通',
+      status: 'arrived', station: 'PRIVATE_SHIPMENT_STATION', arrivalAt: NOW - 1000 }],
+  });
+  const shipment = store.snapshot([account.id]).shipments[0];
+  const paired = store.redeem(store.createPairing({ accountIds: [account.id] }).code, 'PRIVATE_DEVICE');
+  const owner = store.device(paired.token);
+  stations.saveStation('PRIVATE_TARGET', { name: '甲乙社区菜鸟驿站' });
+  const feedback = { id: 'PRIVATE_FEEDBACK', revision: 1, action: 'upsert', kind: 'station_correction',
+    shipmentId: shipment.id, stationName: '兔喜快递超市', otherStationName: '隐私社区第3号柜', targetStationId: 'PRIVATE_TARGET',
+    subLocation: '3号柜', reason: 'station_correction' };
+  const candidateId = matchingFeedback.submit(owner, { items: [feedback] }).items[0].candidateId;
+  assert.ok(candidateId);
+  stations.recordAnalysis(candidateId, { startedAt: NOW, finishedAt: NOW + 1, error: { code: 'AI_INVALID_RESULT',
+    message: 'PRIVATE_AI_MESSAGE', validationFailure: { category: 'EVIDENCE_NOT_IN_INPUT', fields: ['PRIVATE_FIELD'] } },
+    result: { evidence: ['PRIVATE_ANALYSIS_SNIPPET'] } });
+  stations.updateCandidate(candidateId, { status: 'failed' });
+  matchingFeedback.submitRuleReceipt(owner, { stationRulesVersion: stations.revision, serverLogisticsRulesVersion: 0 },
+    { stationRulesVersion: stations.revision, serverLogisticsRulesVersion: 0 });
+  f.advance(1000);
+  matchingFeedback.submit(owner, { items: [{ id: 'PRIVATE_WITHDRAWN', revision: 1, action: 'withdraw' }] });
+  const path = '/v1/diagnostics/station-feedback';
+  for (const options of [{}, { admin: true }, { token: paired.token }]) {
+    assert.equal((await f.request(path, options)).status, 401);
+  }
+  for (const method of ['POST', 'PUT', 'PATCH', 'DELETE']) {
+    assert.equal((await f.request(path, { token, method, body: {} })).status, 405);
+  }
+  for (const query of ['limit=0', 'limit=101', 'limit=1&limit=2', 'before=-1', 'before=1e1', 'from=20&to=10', 'from=',
+    'from=9007199254740993', 'station=PRIVATE_NAME', 'device=PRIVATE_NAME', 'token=PRIVATE_UNKNOWN']) {
+    assert.equal((await f.request(path + '?' + query, { token })).status, 400, query);
+  }
+  const changes = () => store.db.prepare('SELECT total_changes() AS total').get().total;
+  const before = changes();
+  const first = await f.request(path + '?limit=1', { token });
+  assert.equal(first.status, 200);
+  assert.equal(first.headers.get('cache-control'), 'no-store');
+  assert.equal(first.data.items.length, 1);
+  assert.equal(first.data.items[0].status, 'withdrawn');
+  assert.ok(first.data.nextCursor);
+  const next = await f.request(path + '?before=' + encodeURIComponent(first.data.nextCursor), { token });
+  assert.equal(next.status, 200);
+  assert.equal(next.data.nextCursor, null);
+  const [item] = next.data.items;
+  assert.equal(item.kind, 'station_correction');
+  assert.equal(item.status, 'failed');
+  assert.equal(item.reasonCode, 'ANALYSIS_FAILED');
+  assert.equal(item.analysisAttemptCount, 1);
+  assert.equal(item.failureCategory, 'EVIDENCE_NOT_IN_INPUT');
+  assert.equal(item.deviceRuleReceipt.stationRulesVersion, stations.revision);
+  assert.equal(item.deviceRuleReceipt.effectStatus, 'unverified');
+  assert.deepEqual(item.sourceStation, { present: true, generic: true, nonPickup: false, hasLocker: false });
+  assert.deepEqual(item.targetStation, { present: true, generic: false, nonPickup: false, hasLocker: true, selected: true });
+  assert.match(item.feedbackRef, /^[a-f0-9]{24}$/u);
+  assert.match(item.candidateRef, /^[a-f0-9]{24}$/u);
+  const filtered = (await f.request(path + '?from=' + NOW + '&to=' + NOW, { token })).data;
+  assert.deepEqual(filtered.items, [item]);
+  const payload = JSON.stringify(next.data);
+  for (const privateValue of ['PRIVATE_', '兔喜快递超市', '隐私社区', '3号柜', shipment.id, candidateId, owner.id, token]) {
+    assert.equal(payload.includes(privateValue), false);
+  }
+  assert.equal(changes(), before);
+
+  store.db.prepare('DELETE FROM matching_feedback_attempts WHERE candidate_id=?').run(candidateId);
+  const legacyBefore = changes();
+  const legacy = (await f.request(path, { token })).data.items.find(row => row.feedbackRef === item.feedbackRef);
+  assert.equal(legacy.analysisAttemptCount, 0);
+  assert.equal(legacy.failureCategory, 'EVIDENCE_NOT_IN_INPUT');
+  assert.equal(changes(), legacyBefore);
+});

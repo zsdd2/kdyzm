@@ -18,6 +18,7 @@ function fixture(t, request) {
   return { stations, jobs, advance: duration => { time += duration; } };
 }
 const reply = value => ({ choices: [{ message: { content: JSON.stringify(value) } }] });
+const replyContent = content => ({ choices: [{ message: { content } }] });
 const suggestion = { kind: 'locker', suggestedName: '4卡2号柜', alias: '4卡2号柜', subLocation: '2号柜', evidence: ['4卡2号柜'] };
 const enqueue = (stations, id = 'c1', fragment = '包裹在4卡2号柜，电话13812345678，取件码7-6-7042') => stations.enqueue([{ id, stationName: '4卡2号柜', fragment, source: 'sms' }]);
 
@@ -239,22 +240,37 @@ test('AI calls are asynchronous, deduplicated, redacted and require human approv
   assert.equal(stations.stations()[0].aliases[0].subLocation, '2号柜');
 });
 
+test('a lone JSON code fence can carry a valid station suggestion', async t => {
+  const { stations, jobs } = fixture(t, async () => replyContent('```json\r\n' + JSON.stringify(suggestion) + '\r\n```'));
+  enqueue(stations); jobs.request(); await jobs.running;
+  const [candidate] = stations.candidates();
+  assert.equal(candidate.status, 'review');
+  assert.equal(candidate.analysis.result.alias, suggestion.alias);
+  assert.equal(candidate.analysis.error, null);
+});
+
 test('hallucinated ids, aliases, evidence, executable fields and tool calls are rejected', async t => {
+  const fenced = '```json\n' + JSON.stringify(suggestion) + '\n```';
   const cases = [
-    reply({ ...suggestion, targetStationId: 'missing', suggestedName: '' }),
-    reply({ ...suggestion, alias: '模型编造的站名' }),
-    reply({ ...suggestion, evidence: ['输入中不存在的证据'] }),
-    reply({ ...suggestion, suggestedName: 'https://evil.example.com' }),
-    reply({ ...suggestion, script: 'curl https://evil.example.com' }),
-    { choices: [{ message: { content: JSON.stringify(suggestion), tool_calls: [{ type: 'function' }] } }] },
-    { choices: [{ message: { content: '```json\n{}\n```' } }] },
+    [reply({ ...suggestion, targetStationId: 'missing', suggestedName: '' }), 'CANDIDATE_NOT_FOUND', ['targetStationId']],
+    [reply({ ...suggestion, alias: '模型编造的站名' }), 'EVIDENCE_NOT_IN_INPUT', ['alias']],
+    [reply({ ...suggestion, evidence: ['输入中不存在的证据'] }), 'EVIDENCE_NOT_IN_INPUT', ['evidence']],
+    [reply({ ...suggestion, suggestedName: 'https://evil.example.com' }), 'UNSAFE_TEXT', ['suggestedName']],
+    [reply({ ...suggestion, script: 'curl https://evil.example.com' }), 'SCHEMA_FIELDS', []],
+    [{ choices: [{ message: { content: fenced, tool_calls: [{ type: 'function' }] } }] }, 'SCHEMA_FIELDS', []],
+    [replyContent('```json\n{}\n```'), 'ENUM_MISMATCH', ['kind']],
+    [replyContent('说明\n' + fenced), 'JSON_PARSE', []],
+    [replyContent(fenced + '\n' + fenced), 'JSON_PARSE', []],
+    [replyContent('```json\n{invalid}\n```'), 'JSON_PARSE', []],
   ];
   for (let i = 0; i < cases.length; i++) await t.test(String(i), async t => {
-    const { stations, jobs } = fixture(t, async () => cases[i]); enqueue(stations); jobs.request(); await jobs.running;
+    const [response, category, fields] = cases[i];
+    const { stations, jobs } = fixture(t, async () => response); enqueue(stations); jobs.request(); await jobs.running;
     assert.equal(stations.candidates()[0].status, 'failed');
     assert.ok(stations.candidates()[0].error.includes('校验'));
     assert.equal(stations.candidates()[0].analysis.result, null);
     assert.equal(stations.candidates()[0].analysis.error.code, 'AI_INVALID_RESULT');
+    assert.deepEqual(stations.candidates()[0].analysis.error.validationFailure, { category, fields });
     assert.equal(stations.stations().length, 0);
   });
 });
@@ -267,6 +283,18 @@ test('unknown stays for manual review and home/hub classifications cannot create
     assert.equal(stations.stations().length, 0);
     if (kind !== 'unknown') assert.throws(() => stations.approveCandidate(stations.candidates()[0].id, {}), { code: 'CANDIDATE_CLOSED' });
   });
+});
+
+test('station validation diagnostics persist only fixed categories and field names', async t => {
+  const providerEcho = 'synthetic-private-provider-body';
+  const { stations, jobs } = fixture(t, async () => {
+    throw Object.assign(new Error(providerEcho), { code: 'AI_INVALID_RESULT',
+      validationFailure: { category: 'SCHEMA_FIELDS', fields: ['evidence', providerEcho], raw: providerEcho } });
+  });
+  enqueue(stations); jobs.request(); await jobs.running;
+  const [candidate] = stations.candidates();
+  assert.deepEqual(candidate.analysis.error.validationFailure, { category: 'SCHEMA_FIELDS', fields: ['evidence'] });
+  assert.ok(!JSON.stringify(candidate).includes(providerEcho));
 });
 
 test('finite retries consume the daily budget and provider errors never persist secrets', async t => {

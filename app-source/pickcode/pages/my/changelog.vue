@@ -2,6 +2,13 @@
   <view class="changelog-container sf-page">
     <view class="version-list" :class="{ expanded: showOlder }">
       <view class="version-item sf-surface">
+        <view class="version-header"><text class="version-name">v3.2.8 · 私人版</text><text class="version-date">2026-11-26</text></view>
+        <view class="update-list">
+          <view class="update-item"><text class="tag fix">站点</text><text class="content">兼容全角、括号和柜号形式的站点名称，保留不同位置的冲突保护</text></view>
+          <view class="update-item"><text class="tag fix">拼多多</text><text class="content">出柜记录不再当作到站证据，保留历史到站和取件确认</text></view>
+        </view>
+      </view>
+      <view class="version-item sf-surface">
         <view class="version-header"><text class="version-name">v3.2.5 · 私人版</text><text class="version-date">2026-11-22</text></view>
         <view class="update-list">
           <view class="update-item"><text class="tag fix">拼多多</text><text class="content">合并跨订单重复显示的同一运单，对暂缺承运证据的运单标注待核实</text></view>

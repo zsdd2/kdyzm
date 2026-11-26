@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { fail, hash, onlyKeys } from './security.mjs';
 import { nonPickupPlace, redactStationFragment, stationKey, stationText } from './station-text.mjs';
+import { stationLocationConflict } from './station-automation.mjs';
 
 const validId = value => typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/u.test(value);
 const parse = row => row && JSON.parse(row.data);
@@ -124,10 +125,10 @@ export class MatchingFeedbackStore {
     }
     return { accepted: true, receipt: value };
   }
-  state(value, config = this.stations.aiConfig()) {
+  state(value, config = this.stations.aiConfig(), { readOnly = false } = {}) {
     const configured = Boolean(config.channelEnabled && config.hasApiKey && config.channelName && config.baseUrl && config.model);
     const candidate = safeCandidate(this.stations, value.candidateId);
-    this.captureAttempt(candidate);
+    if (!readOnly) this.captureAttempt(candidate);
     const station = candidate?.stationId ? this.stations.station(candidate.stationId) : null;
     const aliasKey = stationKey(candidate?.approvedAlias?.name || candidate?.suggestion?.alias || candidate?.stationName);
     const rulePresent = station?.enabled && aliasKey && [station.name, ...station.aliases.map(alias => alias.name)].some(name => stationKey(name) === aliasKey);
@@ -163,7 +164,7 @@ export class MatchingFeedbackStore {
     return { items: this.db.prepare('SELECT data FROM matching_feedback WHERE device_id=? ORDER BY rowid DESC').all(device.id).map(parse).map(value => this.state(value, config)).sort((a, b) => b.updatedAt - a.updatedAt).slice(0, limit),
       configured: Boolean(config.channelEnabled && config.hasApiKey && config.channelName && config.baseUrl && config.model), enabled: config.enabled, autoApply: config.autoApply };
   }
-  adminQuery({ limit = 50, before = 0, status = '', kind = '', reasonCode = '', device = '', station = '', from = 0, to = 0 } = {}) {
+  adminQuery({ limit = 50, before = 0, status = '', kind = '', reasonCode = '', device = '', station = '', from = 0, to = 0, readOnly = false } = {}) {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) fail(400, 'INVALID_FEEDBACK_QUERY', '每页反馈数须为1到100');
     if (!Number.isSafeInteger(before) || before < 0 || !Number.isSafeInteger(from) || from < 0 || !Number.isSafeInteger(to) || to < 0) fail(400, 'INVALID_FEEDBACK_QUERY', '反馈游标或时间范围无效');
     const config = this.stations.aiConfig(), devices = new Map(this.store.devices().map(value => [value.id, value]));
@@ -200,7 +201,7 @@ export class MatchingFeedbackStore {
         continue;
       }
       if (!row.data) continue;
-      const value = parse(row), candidate = safeCandidate(this.stations, value.candidateId), stationRule = candidate?.stationId ? this.stations.station(candidate.stationId) : null, state = this.state(value, config);
+      const value = parse(row), candidate = safeCandidate(this.stations, value.candidateId), stationRule = candidate?.stationId ? this.stations.station(candidate.stationId) : null, state = this.state(value, config, { readOnly });
       if (status && state.status !== status || kind && value.kind !== kind || reasonCode && state.reasonCode !== reasonCode || !deviceMatch({ id: row.device_id, name: meta.name }) || !textMatch(value, candidate, stationRule)) continue;
       if (from && state.updatedAt < from || to && state.updatedAt > to) continue;
       const analysis = candidate?.analysis && { startedAt: candidate.analysis.startedAt || 0, finishedAt: candidate.analysis.finishedAt || 0,
@@ -209,6 +210,7 @@ export class MatchingFeedbackStore {
         alias: candidate.approvedAlias, revision: stationRule.revision, appliedAt: 0, rolledBackAt: 0 } : null);
       const ruleReceipt = this.latestRuleReceipt(row.device_id);
       items.push({ ...state, device: { id: opaqueDevice(row.device_id), name: meta.name || '未命名设备' },
+        ...(readOnly ? { targetStationName: value.targetStationId ? this.stations.station(value.targetStationId)?.name || '' : '' } : {}),
         deviceRuleReceipt: ruleReceipt ? { received: true, stationRulesVersion: ruleReceipt.stationRulesVersion, serverLogisticsRulesVersion: ruleReceipt.serverLogisticsRulesVersion,
           receivedAt: ruleReceipt.receivedAt, effectStatus: 'unverified' } : { received: false, stationRulesVersion: 0, serverLogisticsRulesVersion: 0, receivedAt: 0, effectStatus: 'unverified' },
         receipt: { id: value.id, revision: value.revision, action: value.action, kind: value.kind || '', reason: value.reason || '', shipmentId: value.shipmentId || '',
@@ -240,17 +242,32 @@ export class MatchingFeedbackStore {
     const target = targetStationId ? this.stations.station(targetStationId) : null;
     if (targetStationId && !target?.enabled) fail(400, 'INVALID_STATION', '目标站点不存在或已停用');
     const stationName = fragment(input.stationName, '原站名'), suppliedOther = fragment(input.otherStationName, '物流站名'), subLocation = fragment(input.subLocation, '柜号', 60);
-    // A client-provided logistics label is never evidence of what the server saw.
-    const otherStationName = shipment ? fragment(shipment.station, '物流站名') : suppliedOther;
-    const owners = otherStationName ? this.stations.stationRules().stations.filter(station => [station.name, ...station.aliases.map(alias => alias.name)].some(name => stationKey(name) && stationKey(name) === stationKey(otherStationName))) : [];
-    const resolvedTarget = targetStationId || (owners.length === 1 ? owners[0].id : '');
-    const sourceKnown = this.stations.station(resolvedTarget)?.aliases.some(alias => stationKey(alias.name) === stationKey(stationName))
-      || stationKey(this.stations.station(resolvedTarget)?.name) && stationKey(this.stations.station(resolvedTarget)?.name) === stationKey(stationName);
+    const storedOther = shipment ? fragment(shipment.station, '物流站名') : suppliedOther;
+    const projected = shipment ? this.store.shipmentView(shipment).station : null;
+    let projectedOther = '';
+    if (projected?.rawName && !projected.conflict && !stationLocationConflict(storedOther, projected.rawName)) {
+      try { projectedOther = fragment(projected.rawName, '物流站名'); }
+      catch (error) { if (error.code !== 'INVALID_STATION') throw error; }
+    }
+    // Verify against server-owned evidence, including the projection sent to the device.
+    const otherStationName = projectedOther || storedOther;
+    const suppliedKey = stationKey(suppliedOther);
+    const matchesOther = [otherStationName, storedOther].some(value => value === suppliedOther || suppliedKey && suppliedKey === stationKey(value));
+    const catalog = this.stations.stationRules().stations;
+    const logistics = globalThis.PickCodeLogistics;
+    const owner = projected?.conflict ? null : logistics.catalogStation(otherStationName, catalog);
+    const resolvedTarget = targetStationId || owner?.id || '';
+    const source = logistics.catalogStation(stationName, catalog);
+    const selectedTarget = this.stations.station(resolvedTarget);
+    const locationConflict = stationLocationConflict(stationName, subLocation, otherStationName, selectedTarget?.name);
+    const sourceKnown = source.id && source.id === resolvedTarget;
+    const exactSource = selectedTarget && [selectedTarget.name, ...selectedTarget.aliases.map(alias => alias.name)]
+      .some(name => stationKey(name) === stationKey(stationName));
     const error = !stationKey(stationName) ? '缺少可学习的原站名，仅保留人工确认记录'
       : [stationName, otherStationName, subLocation].some(nonPickupPlace) ? '片段并非末端取件站点，需核对'
-      : input.kind === 'manual_match' && suppliedOther && suppliedOther !== otherStationName ? '提交的物流站名与授权运单不一致，需核对'
-      : input.kind === 'manual_match' && (owners.length !== 1 || owners[0].id !== resolvedTarget) ? '授权运单尚无唯一已知站点，不能据此自动学习'
-      : input.kind === 'manual_match' && sourceKnown ? '两端站点已由现有规则对应；其他匹配条件仍需核对，未修改规则'
+      : input.kind === 'manual_match' && suppliedOther && !matchesOther ? '提交的物流站名与授权运单不一致，需核对'
+      : input.kind === 'manual_match' && (!owner?.id || owner.id !== resolvedTarget) ? '授权运单尚无唯一已知站点，不能据此自动学习'
+      : sourceKnown && !locationConflict && (input.kind === 'manual_match' || !exactSource) ? '站点已由现有规则识别，未修改规则'
       : !resolvedTarget ? '缺少唯一目标站点，仅保留人工确认记录' : '';
     return { id: input.id, revision: input.revision, action: input.action, kind: input.kind, shipmentId,
       stationName, otherStationName, targetStationId: resolvedTarget, subLocation, reason, error };

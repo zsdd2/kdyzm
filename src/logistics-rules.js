@@ -155,6 +155,10 @@ var PickCodeLogistics = (function () {
       && ((!!stationHint && POINT.test(stationHint) && /^(?:签收|已签收|签收成功)(?:[:：\s]|$)/.test(value))
         || /^(?:待取件|已到站|到站|已入柜|入柜|待自提)(?:[:：\s]|$)/.test(value));
   }
+  function pddCabinetExit(event) {
+    return event && event.provider === 'pdd' && (event.providerStatus === 'OUT_CABINET'
+      || /^OUT_CABINET_/.test(event.providerSubStatus || ''));
+  }
   function timePrecision(value) {
     var raw = text(value);
     if (/^\d{10,13}$/.test(raw)) return 'second';
@@ -183,17 +187,19 @@ var PickCodeLogistics = (function () {
     var station = '', i, event, description, described, describedMatch, card, candidate, arrival;
     events = Array.isArray(events) ? events : [];
     // Backfill must not revive a completed pickup; history readers still retain its arrival milestone.
-    if (events.some(function (item) { return !item.time && (pickupCycleReset(item.description) || activeOnly && (PERSONAL_COMPLETION.test(item.description) || eventStatus(item.description, 'unknown', rules) === 'signed')); })) return empty;
+    if (events.some(function (item) { return !item.time && (pickupCycleReset(item.description) || activeOnly && (pddCabinetExit(item) || PERSONAL_COMPLETION.test(item.description) || eventStatus(item.description, 'unknown', rules) === 'signed')); })) return empty;
     for (i = 0; i < events.length; i++) {
       event = events[i]; description = text(event.description);
       if (pickupCycleReset(description) || activeOnly && PERSONAL_COMPLETION.test(description)) break;
+      if (activeOnly && pddCabinetExit(event)) break;
       describedMatch = stationMatch(description, rules);
       described = describedMatch ? describedMatch.station : '';
       card = event.station ? clean(event.station) : '';
       candidate = !described || genericPickupStation(described) ? card || described : described;
-      arrival = pickupArrivalEvent(description, candidate, rules);
+      if (pddCabinetExit(event) && (genericPickupStation(candidate) || pickupAddressPlaceholder(candidate))) continue;
+      arrival = !pddCabinetExit(event) && pickupArrivalEvent(description, candidate, rules);
       if (activeOnly && !arrival && eventStatus(description, 'unknown', rules) === 'signed') break;
-      if (candidate && (arrival || /取件|取货|自提|代收/.test(description)
+      if (candidate && (arrival || pddCabinetExit(event) || /取件|取货|自提|代收/.test(description)
         || (describedMatch && describedMatch.ruleId && describedMatch.kind === 'location'))) station = station || candidate;
       if (!arrival) continue;
       if (station && candidate && stationKey(station) !== stationKey(candidate)) break;
@@ -212,11 +218,13 @@ var PickCodeLogistics = (function () {
     now = typeof now === 'number' ? now : Date.now();
     events = (Array.isArray(events) ? events : []).slice().sort(function (a, b) { return (b.time || 0) - (a.time || 0); });
     if (events.some(function (item) { return eventTimeIssue(item, now) === 'unknownTime'
-      && (pickupCycleReset(item.description) || pickupArrivalEvent(item.description) || POINT.test(item.description) && eventStatus(item.description) === 'arrived'); })) return empty;
+      && (pickupCycleReset(item.description) || !pddCabinetExit(item) && (pickupArrivalEvent(item.description) || POINT.test(item.description) && eventStatus(item.description) === 'arrived')); })) return empty;
     for (i = 0; i < events.length; i++) {
       event = events[i]; description = text(event.description);
       if (event.time > now) continue;
-      if (pickupCycleReset(description) || pickupArrivalEvent(description) || POINT.test(description) && eventStatus(description) === 'arrived') return empty;
+      if (pickupCycleReset(description)) return empty;
+      if (pddCabinetExit(event)) continue;
+      if (pickupArrivalEvent(description) || POINT.test(description) && eventStatus(description) === 'arrived') return empty;
       if (!/门口|门外/.test(description) || !homeDeliveryCompleted(description)
         || POINT.test(description) || /代收|代签|门卫|保安|前台|邻居|转运|分拣|分拨|物流中心|联系不上|无法联系|未联系上|取消|撤销|疑似|可能|是否|[?？]/.test(description)
         || UNREALIZED.test(description) || FUTURE.test(description)) continue;
@@ -262,10 +270,19 @@ var PickCodeLogistics = (function () {
     return entries;
   }
   function catalogStation(value, catalog) {
-    var key = catalogStationKey(value), found = [], names = [value], owners = [];
-    catalogEntries(catalog).forEach(function (entry) {
-      if (entry.key !== key) return;
-      found.push(entry); names.push(entry.name,entry.subLocation);
+    var key = catalogStationKey(value), entries = catalogEntries(catalog), names = [value], owners = [];
+    var found = entries.filter(function (entry) { return entry.key === key; });
+    var suffix = !found.length && /^(.+?\D)\d{1,4}号柜$/.exec(key);
+    if (suffix && !pickupAddressPlaceholder(suffix[1]) && !/^(?:兔喜|菜鸟(?:裹裹)?|丰巢智能柜)$/.test(suffix[1])) {
+      var base = suffix[1];
+      found = entries.filter(function (entry) { return entry.key === base; });
+      // An explicit cabinet variant is stronger evidence than a station-only match.
+      if (found.length && entries.some(function (entry) {
+        return entry.key.indexOf(base) === 0 && /^(?:(?:[A-Za-z]{1,3}|\d{1,2})区)?[A-Za-z0-9]{1,6}号?(?:快递柜|自提柜|柜)$/.test(entry.key.slice(base.length));
+      })) return { id: '', name: '', ambiguous: true };
+    }
+    found.forEach(function (entry) {
+      names.push(entry.name,entry.subLocation);
       if (owners.indexOf(entry.id) < 0) owners.push(entry.id);
     });
     var ambiguous = owners.length > 1 || !!found.length && catalogLocationConflict(names);
@@ -281,10 +298,11 @@ var PickCodeLogistics = (function () {
     var combined = ruleList(rules).concat([{id:'catalog-completed-pickup',enabled:true,kind:'arrival',origin:'manual',end:'',keywords:[],
       starts:starts}]);
     events = Array.isArray(events) ? events : [];
-    if (events.some(function (item) { return !item.time && (pickupCycleReset(item.description) || PERSONAL_COMPLETION.test(item.description) || eventStatus(item.description, 'unknown', rules) === 'signed'); })) return empty;
+    if (events.some(function (item) { return !item.time && (pickupCycleReset(item.description) || pddCabinetExit(item) || PERSONAL_COMPLETION.test(item.description) || eventStatus(item.description, 'unknown', rules) === 'signed'); })) return empty;
     for (i = 0; i < events.length; i++) {
       event = events[i];
       if (pickupCycleReset(event.description)) break;
+      if (pddCabinetExit(event)) return empty;
       if (UNREALIZED.test(event.description) || REMINDER.test(event.description)) continue;
       if (PERSONAL_COMPLETION.test(event.description)) return empty;
       parts = fragments(text(event.description));
@@ -366,7 +384,7 @@ var PickCodeLogistics = (function () {
     output.forEach(function (rule) { if (Object.prototype.hasOwnProperty.call(ids, rule.id)) throw new Error('规则编号不能重复'); ids[rule.id] = true; });
     return output;
   }
-  return { defaults: defaults, validateRule: validateRule, validateRules: validateRules, pickupStation: pickupStation, pickupAddress: pickupAddress, pickupArrivalEvent: pickupArrivalEvent,
+  return { defaults: defaults, validateRule: validateRule, validateRules: validateRules, pickupStation: pickupStation, pickupAddress: pickupAddress, pickupArrivalEvent: pickupArrivalEvent, pddCabinetExit: pddCabinetExit,
     pickupEvidence: pickupEvidence, doorstepEvidence: doorstepEvidence, eventTimeIssue: eventTimeIssue, catalogStation: catalogStation, catalogPickupEvidence: catalogPickupEvidence, eventStatus: eventStatus, homeDeliveryCompleted: homeDeliveryCompleted, genericPickupStation: genericPickupStation, pickupAddressPlaceholder: pickupAddressPlaceholder,
     pickupCycleReset: pickupCycleReset, test: function (rule, sample) {
       var draft = {}, key;

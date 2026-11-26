@@ -15,14 +15,14 @@ const withoutEvidenceKeys = snapshot => ({
     return { ...shipment, platformView };
   }),
 });
-async function fixture(t, { aiRequest } = {}) {
+async function fixture(t, { aiRequest, platform = 'taobao' } = {}) {
   let time = NOW, calls = [];
   const service = createService({ encryptionKey: 'ab'.repeat(32), adminToken: ADMIN, fixture: true, scheduler: false, now: () => time,
     aiRequest: async request => { calls.push(request); const input = JSON.parse(JSON.parse(request.body).messages[1].content);
       return aiRequest ? aiRequest(input) : response({ kind: 'locker', targetStationId: 'target', alias: input.fragment, subLocation: '2号柜', evidence: [input.fragment] }); } });
   await new Promise(resolve => service.server.listen(0, '127.0.0.1', resolve));
   t.after(() => service.close());
-  const account = service.store.saveAccount({ platform: 'taobao', label: '合成账号', cookie: 'SYNTHETIC_COOKIE' }, undefined, true);
+  const account = service.store.saveAccount({ platform, label: '合成账号', cookie: 'SYNTHETIC_COOKIE' }, undefined, true);
   const pair = () => service.store.redeem(service.store.createPairing({ accountIds: [account.id] }).code, '合成设备');
   const credential = pair(), device = service.store.device(credential.token);
   service.store.importResult(account.id, { orders: [{ platformOrderId: 'order-1', title: '合成包裹', orderDate: NOW - 86400000 }], shipments: [
@@ -208,6 +208,39 @@ test('manual matching validates the actual shipment scope and canonical logistic
   f.service.stations.saveStation('different', { name: '杏花小区驿站' });
   const wrongTarget = f.submit({ ...sample, id: 'wrong-target', targetStationId: 'different' });
   assert.equal(wrongTarget.items.find(item => item.id === 'wrong-target').status, 'review');
+});
+
+for (const { name, supplied, expectedStatus } of [
+  { name: 'exact projected station', supplied: '海棠小区东门2号柜兔喜快递柜', expectedStatus: 'pending' },
+  { name: 'full-width digits and extra whitespace', supplied: '　海棠小区东门 ２ 号柜兔喜快递柜　', expectedStatus: 'pending' },
+  { name: 'another explicit cabinet', supplied: '海棠小区东门3号柜兔喜快递柜', expectedStatus: 'review' },
+]) test('manual matching checks ' + name + ' against the trusted explicit logistics station', async t => {
+  const f = await fixture(t, { platform: 'pdd' });
+  const { store, stations } = f.service;
+  const station = '海棠小区东门2号柜兔喜快递柜';
+  const brand = '兔喜快递超市';
+  stations.saveStation('target', { name: station });
+  const legacy = store.shipment(f.shipment.id);
+  const event = { time: legacy.arrivalAt, timePrecision: 'second', provider: 'pdd', providerStatus: 'IN_CABINET',
+    description: '【驿站】您的包裹已存放至【' + brand + '】，取件地址【' + station + '，营业时间00:00-23:24】，请及时取件。' };
+  store.db.prepare('UPDATE shipments SET data=? WHERE id=?')
+    .run(JSON.stringify({ ...legacy, station: brand, logisticsEvents: [event], logisticsState: 'ok' }), legacy.id);
+  const stored = store.shipment(legacy.id), view = store.shipmentView(stored);
+  assert.equal(stored.station, brand);
+  assert.equal(view.station.rawName, station);
+  assert.equal(view.station.id, 'target');
+  assert.equal(view.arrivalAt, event.time);
+  assert.equal(view.station.conflict, false);
+
+  const result = f.submit(f.sample({ kind: 'manual_match', reason: 'manual_match', shipmentId: stored.id,
+    stationName: '海棠快递暂存2号柜', otherStationName: supplied }));
+  assert.deepEqual(result.accepted, [{ id: 'sample-1', revision: 1 }]);
+  const [receipt] = result.items;
+  assert.equal(receipt.status, expectedStatus);
+  const candidate = stations.candidate(receipt.candidateId);
+  assert.equal(candidate.feedback.otherStationName, station);
+  assert.equal(candidate.feedback.targetStationId, 'target');
+  assert.equal(candidate.feedback.verified, expectedStatus === 'pending');
 });
 
 test('missing source or unmatched logistics is retained for review without an AI call', async t => {

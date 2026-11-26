@@ -80,7 +80,7 @@ export function createService({ filename = ':memory:', encryptionKey, adminToken
   const recognitionApi = createRecognitionApi({ store, workflow: recognition, recognitionAi, stations, logisticsRules, logisticsDaily, now });
   const diagnosticAccess = new DiagnosticAccess({ store, now });
   const interactionDiagnostics = createInteractionDiagnostics({ now });
-  const diagnosticApi = createDiagnosticApi({ store, workflow: recognition, interactions: interactionDiagnostics });
+  const diagnosticApi = createDiagnosticApi({ store, workflow: recognition, interactions: interactionDiagnostics, matchingFeedback });
   const pickupCompletion = store.pickupCompletion;
   const pickupCompletionAi = new PickupCompletionAi({ store, completionStore: pickupCompletion, stations, assistance: aiAssistance, now, automaticEvents: scheduler });
   const enrichCandidates = (accountIds, shipmentIds) => {
@@ -236,6 +236,7 @@ export function createService({ filename = ':memory:', encryptionKey, adminToken
           send(res, 200, { serverVersion, serverTime: now(), ...diagnosticApi.interactions(url.searchParams) }); return;
         }
         if (path === '/v1/diagnostics/accounts') { send(res, 200, { accounts: diagnosticApi.accounts() }); return; }
+        if (path === '/v1/diagnostics/station-feedback') { send(res, 200, diagnosticApi.stationFeedback(url.searchParams)); return; }
         if (path === '/v1/diagnostics/orders') { send(res, 200, diagnosticApi.orders(url.searchParams)); return; }
         const diagnosticOrder = path.match(/^\/v1\/diagnostics\/orders\/([^/]+)$/);
         if (diagnosticOrder) { send(res, 200, diagnosticApi.order(diagnosticOrder[1])); return; }

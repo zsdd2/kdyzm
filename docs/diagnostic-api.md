@@ -19,9 +19,14 @@ Invoke-RestMethod -Uri "$env:PICKCODE_BASE_URL/v1/diagnostics/status" -Headers $
 | `GET /v1/diagnostics/orders/:id` | 规范订单 ID 对应的时间字段、来源、精度、包裹、完整已保存物流与相关异常 |
 | `GET /v1/diagnostics/recognition-tasks` | 异常任务、重试进度 |
 | `GET /v1/diagnostics/recognition-review` | 每日复盘、规则版本、学习结果；只读，不触发学习 |
+| `GET /v1/diagnostics/station-feedback` | 人工站点反馈、候选分析次数、规则版本与领取位置的脱敏结构标记 |
 | `GET /v1/diagnostics/interactions` | 读取进程内交互诊断事件环形缓冲区 |
 
 订单列表使用 `limit`（默认 30，1–100）和 `after`（默认 0）。按响应 `nextCursor` 继续读取，直到为 `null`，筛选结果为空也可能有下一页。复盘接口默认 100 条，分页方式相同。订单详情返回数据库实际保留的物流记录，`logisticsTruncated` 表示上游或持久化阶段已截断，不代表接口可以恢复未保存的数据。未知时间保持 0/unknown，不用采集时间代替。
+
+站点反馈按反馈流水倒序返回 `{items, nextCursor}`。`limit` 默认 50，范围为 1–100。下一页将字符串游标 `nextCursor` 作为 `before` 传入，直到游标为 `null`。`from` 和 `to` 可按最近更新时间筛选，使用包含边界的 Unix 毫秒值，缺省或传 0 表示该侧不限。时间筛选会产生 `items` 为空但仍有下一页的情况。
+
+条目含 `feedbackRef`、`candidateRef`、反馈类型与状态、原因代码、版本、时间、已保存的分析次数和可用的失败类别。`sourceStation` 与 `targetStation` 只提供存在、通用名称、非取件场所、柜位和目标是否已选等布尔标记。`deviceRuleReceipt.effectStatus` 为 `unverified`，表示该回执只确认规则版本已收取。此接口只读取已保存的记录。
 
 诊断请求只有 GET 白名单；不支持的写方法返回 405，缺失/失效凭据返回 401，频控返回 429（每 IP 和每凭据各 120 次/分钟）。所有响应禁止缓存。HTTP OPTIONS 仅处理跨域预检，不返回诊断数据。
 

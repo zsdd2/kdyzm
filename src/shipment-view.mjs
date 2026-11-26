@@ -58,7 +58,7 @@ function timeQuality(shipment, field, events, now, platform, rules) {
   if (timestampKnown(shipment[field], now) && ['platform_event', 'locker_arrival', 'locker_created'].includes(shipment[`${field}Source`]))
     return quality('known', 'PLATFORM_EVIDENCE');
   const relevant = events.filter(event => field === 'shippedAt' ? shippingEvent(event.description, platform)
-    : logistics.pickupArrivalEvent(event.description, shipment.station, rules) || /门口|门外/.test(event.description || ''));
+    : !logistics.pddCabinetExit(event) && (logistics.pickupArrivalEvent(event.description, shipment.station, rules) || /门口|门外/.test(event.description || '')));
   if (relevant.some(event => logistics.eventTimeIssue(event, now) === 'timeConflict'))
     return quality('ambiguous', 'TIME_CONFLICT');
   if (relevant.some(event => !timestampKnown(event.time, now))) return quality('unknown', 'EVENT_TIME_UNKNOWN');
@@ -87,10 +87,14 @@ export function projectShipmentView(shipment, { platform, orderStatus = '', cata
   const doorstep = logistics.doorstepEvidence(events, { platform, carrier: shipment.carrier }, now);
   const pickup = logistics.catalogPickupEvidence(events, catalog, rules);
   const textualPickup = logistics.pickupEvidence(events, rules);
+  const exitUsedAsArrival = platform === 'pdd' && shipment.arrivalAtSource === 'platform_event'
+    && events.some(event => event.time && event.time === shipment.arrivalAt && logistics.pddCabinetExit(event));
   const explicitAddress = explicitAddressForStoredArrival(shipment, events, textualPickup, catalog, rules, now);
-  const rawStation = doorstep.arrivalAt ? '' : explicitAddress || shipment.station || textualPickup.station || pickup.station || '';
+  const entryStation = exitUsedAsArrival && (logistics.genericPickupStation(shipment.station) || logistics.pickupAddressPlaceholder(shipment.station)) && textualPickup.arrivalAt
+    ? textualPickup.station : '';
+  const rawStation = doorstep.arrivalAt ? '' : explicitAddress || entryStation || shipment.station || textualPickup.station || pickup.station || '';
   const station = stationView(rawStation, catalog);
-  const stationEvent = rawStation && events.find(event => logistics.pickupArrivalEvent(event.description, rawStation, rules)
+  const stationEvent = rawStation && events.find(event => !logistics.pddCabinetExit(event) && logistics.pickupArrivalEvent(event.description, rawStation, rules)
     && stationKey(event.description).includes(stationKey(rawStation)));
   if (stationEvent && stationLocationConflict(rawStation, station.name, station.subLocation, stationEvent.description))
     Object.assign(station, { id: '', name: '', subLocation: '', displayName: rawStation, conflict: true });
@@ -107,7 +111,10 @@ export function projectShipmentView(shipment, { platform, orderStatus = '', cata
     && stationKey(candidate.station) !== stationKey(rawStation);
   const trustedArrival = timestampKnown(shipment.arrivalAt, now) && ['platform_event', 'locker_arrival', 'locker_created'].includes(shipment.arrivalAtSource);
   const completed = !!shipment.picked || effectivePicked(pickupCompletionState(shipment));
-  const arrival = stationConflict || reset && !candidate || shipment.arrivalAt && !timestampKnown(shipment.arrivalAt, now) ? { arrivalAt: 0, arrivalAtSource: 'unknown', arrivalAtPrecision: 'unknown' }
+  const unknownArrival = { arrivalAt: 0, arrivalAtSource: 'unknown', arrivalAtPrecision: 'unknown' };
+  const arrival = exitUsedAsArrival ? candidate?.usableForCurrent
+    ? { arrivalAt: candidate.time, arrivalAtSource: candidate.source, arrivalAtPrecision: candidate.precision } : unknownArrival
+    : stationConflict || reset && !candidate || shipment.arrivalAt && !timestampKnown(shipment.arrivalAt, now) ? unknownArrival
     : confirmedAlias && !completed && !trustedArrival ? { arrivalAt: candidate.time, arrivalAtSource: candidate.source, arrivalAtPrecision: candidate.precision }
       : { arrivalAt: shipment.arrivalAt || 0, arrivalAtSource: shipment.arrivalAtSource || 'unknown', arrivalAtPrecision: shipment.arrivalAtPrecision || 'unknown' };
   let status = shipment.status || 'unknown';

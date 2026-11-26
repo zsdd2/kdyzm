@@ -19,15 +19,15 @@ const inside = { ...out, status: 'IN_CABINET', status_tag: '待取件', sub_stat
 const eventsOf = traces => pddShippingEvents({ traces }, timestamp, undefined, NOW).events;
 const conflictEvents = () => [eventsOf([out])[0], eventsOf([inside])[0]];
 
-function fixture(t, platform = 'pdd') {
-  const store = new Store({ key: Buffer.alloc(32, 8), now: () => NOW });
+function fixture(t, platform = 'pdd', storeOptions = {}) {
+  const store = new Store({ key: Buffer.alloc(32, 8), now: () => NOW, ...storeOptions });
   t.after(() => store.close());
   store.saveAccount({ platform, label: '合成准确度账号', cookie: 'SYNTHETIC' }, 'pdd-accuracy', true);
-  const sync = logisticsEvents => store.importResult('pdd-accuracy', {
+  const sync = (logisticsEvents, shipmentFields = {}) => store.importResult('pdd-accuracy', {
     orders: [{ platformOrderId: ORDER, title: '合成商品', orderDate: NOW - 86400000 }],
     shipments: [{ platformOrderId: ORDER, waybillNo: WAYBILL, carrier: '申通快递', status: 'arrived',
       arrivalAt: NOW - 3600000, arrivalAtSource: 'locker_arrival', arrivalAtPrecision: 'second',
-      logisticsState: 'ok', logisticsCheckedAt: NOW, logisticsEvents }],
+      logisticsState: 'ok', logisticsCheckedAt: NOW, logisticsEvents, ...shipmentFields }],
   });
   return { store, sync, snapshot: () => store.snapshot(['pdd-accuracy']) };
 }
@@ -45,6 +45,50 @@ test('PDD single-parcel cabinet rejects an explicit different waybill without lo
   assert.equal(conflict.station, '');
   assert.equal(conflict.arrivalAt, 0);
   assert.equal(conflict.status, 'transit');
+});
+
+const sameStation = '包裹已存放至【合成驿站】';
+const enterCabinet = { ...inside, timestamp: NOW / 1000 - 1800, info: sameStation };
+const exitCabinet = { ...out, info: sameStation };
+const enteredAt = enterCabinet.timestamp * 1000, collectedAt = exitCabinet.timestamp * 1000;
+const cabinetEvents = traces => traces.map(event => [event.providerStatus, event.time]);
+const expectedCabinetEvents = [['OUT_CABINET', collectedAt], ['IN_CABINET', enteredAt]];
+
+test('PDD collector keeps the earlier entry time when cabinet exit repeats arrival prose', async () => {
+  const collect = createCollector({ now: () => NOW, fetchImpl: async url => new URL(url).pathname.includes('/cabinet/')
+    ? reply({ result: {} }) : reply({ shipping: { order_sn: ORDER, tracking_number: WAYBILL, traces: [enterCabinet, exitCabinet] } }) });
+  const { shipments: [parcel] } = await collect({ platform: 'pdd' }, 'pdd_user_id=SYNTHETIC', { targetOrder });
+  assert.equal(parcel.arrivalAt, enteredAt);
+  assert.deepEqual(cabinetEvents(parcel.logisticsEvents), expectedCabinetEvents);
+});
+
+test('PDD Store keeps cabinet entry and pickup as separate milestones when the descriptions match', t => {
+  const f = fixture(t);
+  f.sync(eventsOf([enterCabinet, exitCabinet]), { arrivalAt: collectedAt, arrivalAtSource: 'platform_event' });
+  const { shipments: [parcel] } = f.snapshot();
+  assert.equal(f.store.shipment(parcel.id).arrivalAt, enteredAt);
+  assert.equal(parcel.arrivalAt, enteredAt);
+  assert.equal(parcel.pickupCompletion.completedAt, collectedAt);
+  assert.deepEqual(cabinetEvents(parcel.logisticsEvents), expectedCabinetEvents);
+});
+
+test('PDD compact snapshot corrects a saved arrival copied from a later exit node', t => {
+  const f = fixture(t, 'pdd', { getLogisticsRules: () => globalThis.PickCodeLogistics.defaults() });
+  const genericStation = '兔喜快递超市', specificStation = '合成花园北门兔喜快递超市';
+  f.sync(eventsOf([
+    { ...enterCabinet, info: `包裹已存放至【${genericStation}】，取件地址【${specificStation}】` },
+    { ...exitCabinet, info: `包裹已存放至【${genericStation}】` },
+  ]));
+  const { shipments: [parcel] } = f.snapshot();
+  const raw = f.store.shipment(parcel.id);
+  f.store.db.prepare('UPDATE shipments SET data=? WHERE id=?').run(JSON.stringify({ ...raw,
+    arrivalAt: collectedAt, arrivalAtSource: 'platform_event', arrivalAtPrecision: 'second',
+    station: genericStation, stationSource: 'platform_event' }), parcel.id);
+  const { shipments: [compact] } = f.store.snapshot(['pdd-accuracy'], undefined, 0, false);
+  assert.equal(compact.arrivalAt, enteredAt);
+  assert.equal(compact.station, specificStation);
+  assert.equal(compact.platformView.arrivalEvidence.candidates[0]?.time, enteredAt);
+  assert.equal(f.store.shipment(parcel.id).arrivalAt, collectedAt);
 });
 
 for (const reverse of [false, true]) test(`PDD conflicting same-time provider states remain pending regardless of trace order (reverse=${reverse})`, () => {

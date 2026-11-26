@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "version": "3.2.5",
+  "version": "3.2.8",
   "upstreamRepository": "https://github.com/SongZX0106/PickCode",
   "upstreamCommit": "07f9fed59122d7f2210a825aadedc2a913a83176",
   "note": "Production source snapshot with authorized downstream modifications; no private data or workflow history.",
@@ -85,7 +85,7 @@
     {
       "path": "android/app/build.gradle",
       "size": 3561,
-      "sha256": "430a186b71baa5c8fe9a67b6725535f37f7c45e548b9355593dd7d6d83fce883"
+      "sha256": "73b62d9934bddf7cf6bb9bae31942103b6ca9922dd0ea0bee1dc30ba3321acbf"
     },
     {
       "path": "android/app/src/main/AndroidManifest.xml",
@@ -564,8 +564,8 @@
     },
     {
       "path": "core/pickcode-core.js",
-      "size": 208866,
-      "sha256": "abe9ffcb162d03fd7d63b47659a188f4e705aee244f05ce67c4895271675eba4"
+      "size": 209964,
+      "sha256": "c5b58ab4c7a2699cfb3ca687426a35f5329c76e8a02b09aaeadfb23e896d7c47"
     },
     {
       "path": "docs/android-install.md",
@@ -590,17 +590,17 @@
     {
       "path": "manifest.json",
       "size": 3241,
-      "sha256": "165a5d079715ef20ac9fe5f54c92e48a2d923044bca864c2d5b378b355105fb9"
+      "sha256": "d91e3f6ea4adff8f42e901ebaf2a4608aa425d2ebb8b7f642794d16520165c02"
     },
     {
       "path": "package-lock.json",
       "size": 256607,
-      "sha256": "72899473669a6b40498fafdb207e1530742d532f5a1d8ee4eedf87048a5dc454"
+      "sha256": "3c9e82e410a080c706c5d2938d16332fa3912e4e97b57910d7a219c2fe52d8a8"
     },
     {
       "path": "package.json",
       "size": 1727,
-      "sha256": "8cc886988f136aff1331c7331b4345c85b1b38d1169ee4c9dbfa2c03c500f862"
+      "sha256": "fabc0e0ef793c8d38230aad9aa85cbc4fc1ad2b6e6ae7a3b4a3680b021f453b2"
     },
     {
       "path": "pages.json",
@@ -629,8 +629,8 @@
     },
     {
       "path": "pages/my/changelog.vue",
-      "size": 53884,
-      "sha256": "64e49ae8ee93cfbe99b1143df721089a33ccad773886f5dd8f08a9440f73df6c"
+      "size": 54521,
+      "sha256": "0040a96f003543f79d56cb9af1f5070cd05deb430fb41ab0d0ce5b9eeb062b73"
     },
     {
       "path": "pages/my/faq.vue",
@@ -744,8 +744,8 @@
     },
     {
       "path": "server/src/logistics-rules.js",
-      "size": 30312,
-      "sha256": "04b9be0184c0c30d4a4f7f321e96c58075fa239146cff4e7e5c84ca415399eca"
+      "size": 31652,
+      "sha256": "405875463fd34df27dac6b30fd523a632c2db73b5416be1e204c3ca151aca3a4"
     },
     {
       "path": "services/ai-service-view.js",
@@ -2642,7 +2642,7 @@
     {
       "path": "README.md",
       "size": 2054,
-      "sha256": "a54e3819a43cae357a2a83ad49628c9ed9c0908aa2ed2fd0e82b5e00781dc3ee"
+      "sha256": "1b214f46ee26d354e048da18e778f6e0586a1bdda5343c0595190b4449cfd6ab"
     },
     {
       "path": ".gitignore",

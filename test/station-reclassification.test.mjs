@@ -89,16 +89,19 @@ async function fixture(t, options = {}) {
 }
 
 test('AI-approved aliases immediately refresh original cached station evidence without another collection', async t => {
-  const { service, account } = await fixture(t);
+  const alias = `${ALIAS}便民服务站`;
+  const { service, account } = await fixture(t, { aiRequest: async () => ({ choices: [{ message: { content: JSON.stringify({
+    kind: 'locker', targetStationId: 'station-a', alias, subLocation: '2号柜', evidence: [alias],
+  }) } }] }) });
   service.stations.saveStation('station-a', { name: NAME });
-  service.store.importResult(account.id, { orders: [{ platformOrderId: 'o', title: '合成', orderDate: AT - 86400000 }], shipments: [{ platformOrderId: 'o', waybillNo: 'SYNTHETIC12345678', status: 'unknown', logisticsState: 'ok', logisticsEvents: events(`已交付给${ALIAS}`) }] });
+  service.store.importResult(account.id, { orders: [{ platformOrderId: 'o', title: '合成', orderDate: AT - 86400000 }], shipments: [{ platformOrderId: 'o', waybillNo: 'SYNTHETIC12345678', status: 'unknown', logisticsState: 'ok', logisticsEvents: events(`已交付给${alias}`) }] });
   const before = service.store.snapshot([account.id]); assert.equal(before.shipments[0].station, '');
   service.stations.saveAiConfig({ channelName: '合成', baseUrl: 'https://api.example.com/v1', model: 'fixture', apiKey: randomBytes(24).toString('hex'), enabled: true, autoApply: true, logisticsEnabled: false });
-  service.stations.enqueue([{ id: 'fixture', stationName: ALIAS, fragment: ALIAS, source: 'platform' }], { source: 'platform' });
+  service.stations.enqueue([{ id: 'fixture', stationName: alias, fragment: alias, source: 'platform' }], { source: 'platform' });
   service.stationAi.request(); await service.stationAi.running;
   assert.equal(service.stations.candidates()[0].approvalMode, 'automatic');
   const after = service.store.snapshot([account.id]);
-  assert.equal(after.shipments[0].station, ALIAS); assert.equal(after.shipments[0].arrivalAt, AT);
+  assert.equal(after.shipments[0].station, alias); assert.equal(after.shipments[0].arrivalAt, AT);
   assert.ok(after.serverRevision > before.serverRevision); assert.equal(after.shipments[0].picked, false);
   assert.deepEqual(service.store.refreshStationRecognition(service.stations.stationRules().stations), { changed: 0 });
   assert.equal(service.store.snapshot([account.id]).serverRevision, after.serverRevision);

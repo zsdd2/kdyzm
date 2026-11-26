@@ -143,7 +143,12 @@ var PickCodeCore = (function () {
       return s.split('').map(function(c){return digits[c];}).join('');
     });
   }
-  function stationKey(value) { return locationNumbers(normalize(text(value,200))).replace(/[\s，,。()（）]/g,''); }
+  function stationWidth(value,limit) {
+    var bounded=text(value,limit);
+    if(typeof bounded.normalize==='function')bounded=bounded.normalize('NFKC');
+    return normalize(bounded.replace(/[！-～]/g,function(character){return String.fromCharCode(character.charCodeAt(0)-65248);})).slice(0,limit);
+  }
+  function stationKey(value) { return locationNumbers(stationWidth(value,200)).replace(/[\s，,。()（）]/g,''); }
   function carrierKey(value) { return text(value,100).replace(/速递|快递|速运|物流/g,'').replace(/YTO|圆通速递/ig,'圆通').replace(/ZTO/ig,'中通').replace(/STO/ig,'申通').replace(/JT/ig,'极兔').replace(/SF/ig,'顺丰').replace(/JD/ig,'京东'); }
   function sourceWaybill(body) { var m=/(?:JT|YT|SF|JD|ZTO|STO)\d{8,}|(?:运单号|快递单号|单号)\s*[:：]?\s*([A-Za-z0-9]{10,30})/i.exec(body); return m ? (m[1]||m[0]).toUpperCase() : ''; }
   function samePlace(state,a,b) { return stationMatch(state,a,b)==='same'; }
@@ -164,8 +169,9 @@ var PickCodeCore = (function () {
       var names=[{name:rule.name,subLocation:''}].concat(rule.aliases||[]),matching=names.filter(function(alias){return matchStationKey(alias.name)===key;});
       if(matching.length){var alias=matching[0],extra=stationLocation(alias.subLocation);found.push({id:rule.id,name:rule.name,region:rule.region,subLocation:alias.subLocation||'',ruleSubLocation:alias.subLocation||'',location:{cabinet:location.cabinet||extra.cabinet,gate:location.gate||extra.gate,card:location.card||extra.card,building:location.building||extra.building}});}
     });
-    var result=found.length===1?found[0]:{id:'',name:'',region:'',subLocation:'',location:location};
-    result.key=key;result.ambiguous=found.length>1;
+    var cabinetStation=!found.length&&/\d{1,4}号柜$/.test(key)?logistics.catalogStation(text(value,200),state.stationRules):null;
+    var result=found.length===1?found[0]:{id:cabinetStation&&cabinetStation.id||'',name:cabinetStation&&cabinetStation.name||'',region:'',subLocation:'',location:location};
+    result.key=key;result.ambiguous=found.length>1||!!(cabinetStation&&cabinetStation.ambiguous);
     result.subLocation=result.subLocation.replace(/[0-9０-９零〇一二两三四五六七八九十]+\s*卡/g,'').replace(/\s+/g,' ').trim()||[location.gate,location.building?location.building+'栋':'',location.cabinet?location.cabinet+'号柜':''].filter(Boolean).join(' ');
     var cabinet=cabinetDisplay([value,result.ruleSubLocation]);result.pickupCabinet=cabinet.pickupCabinet;result.pickupCabinetConflict=cabinet.pickupCabinetConflict;
     stationRecognitionCache[cacheKey]=result;return result;
@@ -182,7 +188,7 @@ var PickCodeCore = (function () {
     matches[key]=result;return result;
   }
   function cabinetLocations(value) {
-    var normalized=normalize(text(value,400)),found=[],match,pattern=/((?:[A-Za-z]{1,3}区|[0-9]{1,2}区)?(?:[A-Za-z]{1,3}|[0-9]{1,4}|[零〇一二两三四五六七八九十]{1,3}))\s*号?\s*(?:快递柜|自提柜|柜)/g;
+    var normalized=stationWidth(value,400),found=[],match,pattern=/((?:[A-Za-z]{1,3}区|[0-9]{1,2}区)?(?:[A-Za-z]{1,3}|[0-9]{1,4}|[零〇一二两三四五六七八九十]{1,3}))\s*号?\s*(?:快递柜|自提柜|柜)/g;
     while((match=pattern.exec(normalized))){
       if(match.index&&/[A-Za-z0-9]/.test(normalized.charAt(match.index-1)))continue;
       var identifier=match[1].replace(/\s/g,'').toUpperCase(),label=/^[A-Z]{1,3}$/.test(identifier)?identifier+'柜':locationNumbers(identifier+'号柜');
@@ -320,7 +326,14 @@ var PickCodeCore = (function () {
     return null;
   }
   function stationFragment(value) {
-    var fragment=text(value,400).replace(/https?:\/\/\S+|www\.\S+/ig,'').replace(/(?:取件码|取货码|提货码|运单号|订单号|快递单号|手机号|电话|联系)\s*(?:为|是)?\s*[:：]?\s*[A-Za-z0-9*+\- ]+/g,'')
+    var address=stationWidth(value,400).trim(), wrapped=/^(?:【([^【】]+)】|\[([^\[\]]+)\])$/.exec(address);
+    // A complete address can be wrapped. Embedded sender labels still go through redaction.
+    if(wrapped){
+      address=(wrapped[1]||wrapped[2]).trim();
+      var withoutLocations=address.replace(/[A-Za-z0-9-]+(?=\s*(?:号|卡|栋|幢|快递柜|自提柜|柜))/g,'');
+      if(logistics.pickupAddressPlaceholder(address)||/\d{4,}/.test(address)||(withoutLocations.match(/[A-Za-z0-9-]+/g)||[]).some(validCode))return '';
+    }
+    var fragment=address.replace(/https?:\/\/\S+|www\.\S+/ig,'').replace(/(?:取件码|取货码|提货码|运单号|订单号|快递单号|手机号|电话|联系)\s*(?:为|是)?\s*[:：]?\s*[A-Za-z0-9*+\- ]+/g,'')
       .replace(/(?:JT|YT|SF|JD|ZTO|STO)\d{8,}|[A-Za-z]*\d{9,}[A-Za-z0-9]*|\d{3,}(?:-\d+)+/ig,'')
       .replace(/[^，,。；;！!]*?(?:先生|女士|同学|收件人|收货人)[:：]?/g,'').replace(/【[^】]*】|\[[^\]]*\]/g,'').trim();
     fragment=fragment.split(/(?:请凭|凭取|取件码|取货码|提货码|联系电话|客服电话|请及时|请尽快|取件时间|营业时间)/)[0].trim();

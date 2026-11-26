@@ -1,4 +1,4 @@
-import { fail } from './security.mjs';
+import { fail, HttpError } from './security.mjs';
 import { stationSubLocation } from '../public/station-location.js';
 
 // Keep this recognition boundary aligned with core locationNumbers/matchStationKey.
@@ -33,23 +33,48 @@ export function redactStationFragment(value) {
 export const nonPickupPlace = value => /中转|分拣|分拨|转运|集散|处理中心|航空部|发货仓|发件仓|揽收仓|仓储中心|配送中心|家门外|送货上门|住宅|\d+栋\d+室/u.test(value)
   || /家门口/u.test(value) && !/驿站|快递柜|自提柜|代收点/u.test(value);
 
+const suggestionFields = ['kind', 'targetStationId', 'suggestedName', 'alias', 'subLocation', 'evidence'];
+const failureCategories = ['JSON_PARSE', 'SCHEMA_FIELDS', 'TYPE_MISMATCH', 'ENUM_MISMATCH', 'CANDIDATE_NOT_FOUND', 'EVIDENCE_NOT_IN_INPUT', 'HARD_CONFLICT', 'UNSAFE_TEXT'];
+
+export function safeStationValidationFailure(value) {
+  if (!failureCategories.includes(value?.category)) return null;
+  const fields = Array.isArray(value.fields) ? suggestionFields.filter(key => value.fields.includes(key)) : [];
+  return { category: value.category, fields };
+}
+
+export function invalidStationSuggestion(category, message, fields = []) {
+  throw Object.assign(new HttpError(400, 'AI_INVALID_RESULT', message), { validationFailure: { category, fields } });
+}
+
 export function validateStationSuggestion(candidate, value, stations) {
-  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(k => !['kind', 'targetStationId', 'suggestedName', 'alias', 'subLocation', 'evidence'].includes(k))) fail(400, 'AI_INVALID_RESULT', 'AI结果字段无效');
-  if (!['pickup_station', 'locker', 'home', 'hub', 'unknown'].includes(value.kind)) fail(400, 'AI_INVALID_RESULT', 'AI结果类型无效');
+  if (!value || typeof value !== 'object' || Array.isArray(value)) invalidStationSuggestion('TYPE_MISMATCH', 'AI结果字段无效');
+  if (Object.keys(value).some(key => !suggestionFields.includes(key))) invalidStationSuggestion('SCHEMA_FIELDS', 'AI结果字段无效');
+  if (!['pickup_station', 'locker', 'home', 'hub', 'unknown'].includes(value.kind)) invalidStationSuggestion('ENUM_MISMATCH', 'AI结果类型无效', ['kind']);
   const read = (key, max) => {
+    if (value[key] != null && typeof value[key] !== 'string') invalidStationSuggestion('TYPE_MISMATCH', 'AI结果包含不支持的文字', [key]);
     try { return stationText(value[key] ?? '', key, max, false); }
-    catch { fail(400, 'AI_INVALID_RESULT', 'AI结果包含不支持的文字'); }
+    catch { invalidStationSuggestion('UNSAFE_TEXT', 'AI结果包含不支持的文字', [key]); }
   };
   const targetStationId = read('targetStationId', 128), suggestedName = read('suggestedName', 120), alias = read('alias', 120), subLocation = read('subLocation', 60);
   const evidence = typeof value.evidence === 'string' ? [value.evidence] : value.evidence;
-  if (!Array.isArray(evidence) || evidence.length > 5 || evidence.some(e => typeof e !== 'string' || !e || e.length > 200 || !candidate.fragment.includes(e) || redactStationFragment(e) !== e)) fail(400, 'AI_INVALID_RESULT', 'AI证据必须引用脱敏原文');
-  if (targetStationId && !stations.some(s => s.id === targetStationId && s.enabled)) fail(400, 'AI_INVALID_RESULT', 'AI目标站点不存在或已停用');
-  if (targetStationId && suggestedName) fail(400, 'AI_INVALID_RESULT', 'AI结果只能指定一个目标');
-  for (const text of [alias, subLocation]) if (text && (!candidate.fragment.includes(text) || redactStationFragment(text) !== text)) fail(400, 'AI_INVALID_RESULT', 'AI别名与柜号必须来自脱敏原文');
-  if (suggestedName && (!candidate.fragment.includes(suggestedName) || nonPickupPlace(suggestedName) || redactStationFragment(suggestedName) !== suggestedName)) fail(400, 'AI_INVALID_RESULT', 'AI新站点名称必须来自脱敏原文');
-  if (['pickup_station', 'locker'].includes(value.kind) && (!alias || !evidence.length || (!targetStationId && !suggestedName)
-    || [candidate.fragment, candidate.stationName, alias, subLocation].some(nonPickupPlace))) fail(400, 'AI_INVALID_RESULT', 'AI结果缺少可核对的末端取件站点信息');
+  if (!Array.isArray(evidence) || evidence.some(e => typeof e !== 'string')) invalidStationSuggestion('TYPE_MISMATCH', 'AI证据必须引用脱敏原文', ['evidence']);
+  if (evidence.length > 5) invalidStationSuggestion('SCHEMA_FIELDS', 'AI证据必须引用脱敏原文', ['evidence']);
+  if (evidence.some(e => !e || e.length > 200 || !candidate.fragment.includes(e) || redactStationFragment(e) !== e))
+    invalidStationSuggestion('EVIDENCE_NOT_IN_INPUT', 'AI证据必须引用脱敏原文', ['evidence']);
+  if (targetStationId && !stations.some(s => s.id === targetStationId && s.enabled)) invalidStationSuggestion('CANDIDATE_NOT_FOUND', 'AI目标站点不存在或已停用', ['targetStationId']);
+  if (targetStationId && suggestedName) invalidStationSuggestion('SCHEMA_FIELDS', 'AI结果只能指定一个目标', ['targetStationId', 'suggestedName']);
+  for (const [key, text] of Object.entries({ alias, subLocation })) if (text && (!candidate.fragment.includes(text) || redactStationFragment(text) !== text))
+    invalidStationSuggestion('EVIDENCE_NOT_IN_INPUT', 'AI别名与柜号必须来自脱敏原文', [key]);
+  if (suggestedName && (!candidate.fragment.includes(suggestedName) || nonPickupPlace(suggestedName) || redactStationFragment(suggestedName) !== suggestedName))
+    invalidStationSuggestion('EVIDENCE_NOT_IN_INPUT', 'AI新站点名称必须来自脱敏原文', ['suggestedName']);
+  if (['pickup_station', 'locker'].includes(value.kind)) {
+    const missing = [...(!targetStationId && !suggestedName ? ['targetStationId', 'suggestedName'] : []),
+      ...(!alias ? ['alias'] : []), ...(!evidence.length ? ['evidence'] : [])];
+    if (missing.length) invalidStationSuggestion('SCHEMA_FIELDS', 'AI结果缺少可核对的末端取件站点信息', missing);
+    if ([candidate.fragment, candidate.stationName, alias, subLocation].some(nonPickupPlace))
+      invalidStationSuggestion('HARD_CONFLICT', 'AI结果缺少可核对的末端取件站点信息', ['kind']);
+  }
   const detail = stationSubLocation(subLocation);
-  if (detail && !candidate.fragment.includes(detail)) fail(400, 'AI_INVALID_RESULT', 'AI子位置必须是原文中的连续片段');
+  if (detail && !candidate.fragment.includes(detail)) invalidStationSuggestion('EVIDENCE_NOT_IN_INPUT', 'AI子位置必须是原文中的连续片段', ['subLocation']);
   return { kind: value.kind, targetStationId, suggestedName, alias, subLocation: detail, evidence };
 }

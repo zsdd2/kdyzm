@@ -83,13 +83,15 @@ function pickupData(input = {}, old = {}, events = [], rules, now = Date.now(), 
   const newCycle = events.some(event => pickupCycleReset(event.description || '') && (!event.time || event.time <= now) && (!event.time || event.time >= validTime(old.arrivalAt)));
   const stationConflict = input.station && old.station && ['platform_event', 'locker'].includes(input.stationSource)
     && input.station.replace(/[\s\p{P}]/gu, '') !== old.station.replace(/[\s\p{P}]/gu, '');
-  if (evidence.arrivalAt && (!explicitArrival || evidence.arrivalAt >= arrivalAt)) {
+  const exitUsedAsArrival = platform === 'pdd' && result.arrivalAtSource === 'platform_event' && arrivalAt
+    && events.some(event => event.time === arrivalAt && globalThis.PickCodeLogistics.pddCabinetExit(event));
+  if (evidence.arrivalAt && (!explicitArrival || evidence.arrivalAt >= arrivalAt || exitUsedAsArrival)) {
     const keepSpecificStation = !newCycle && station && !genericPickupStation(station) && genericPickupStation(evidence.station);
     const useEvidenceStation = evidence.station && !keepSpecificStation;
     result = { ...evidence, station: useEvidenceStation ? evidence.station : newCycle || evidence === doorstep ? '' : station,
       stationSource: useEvidenceStation ? evidence.stationSource : newCycle || evidence === doorstep ? 'unknown' : result.stationSource };
   }
-  else if (reset || (!explicitArrival && stationConflict)) result = evidence;
+  else if (exitUsedAsArrival || reset || (!explicitArrival && stationConflict)) result = evidence;
   else if (rules && input.logisticsState === 'ok' && input.logisticsEvents?.length && !explicitArrival
     && Object.hasOwn(input, 'arrivalAt') && old.arrivalAtSource === 'platform_event' && !input.logisticsTruncated && !old.logisticsTruncated
     && !events.some(event => logisticsEventTimeIssue(event, now) === 'timeConflict')) {
